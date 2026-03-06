@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { LogOut, Menu, FileText, Users, Calendar, BarChart3, Sparkles, ArrowRight, History, Sun, Moon } from 'lucide-react';
+import { LogOut, Menu, FileText, Users, Calendar, BarChart3, Sparkles, ArrowRight, History, Sun, Moon, Brain, Download, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
+// @ts-ignore
+import html2pdf from 'html2pdf.js';
 
 interface PMStats {
     prdsCreated: number;
@@ -15,29 +17,116 @@ export function PMDashboard() {
     const [userName, setUserName] = useState('');
     const [userEmail, setUserEmail] = useState('');
     const [stats, setStats] = useState<PMStats>({ prdsCreated: 0, storiesGenerated: 0, sprintsPlanned: 0 });
+    const [isDownloading, setIsDownloading] = useState(false);
     const { theme, toggleTheme } = useTheme();
     const navigate = useNavigate();
 
     useEffect(() => {
-        const fetchUser = async () => {
+        const fetchUserAndStats = async () => {
             const { data: { user } } = await supabase.auth.getUser();
             if (user) {
                 setUserEmail(user.email || '');
                 setUserName(user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'User');
+
+                // Fetch stats from Supabase instead of localStorage
+                const [{ count: prdCount }, { count: storyCount }, { count: sprintCount }] = await Promise.all([
+                    supabase.from('prds').select('*', { count: 'exact', head: true }).eq('user_id', user.id),
+                    supabase.from('user_stories').select('*', { count: 'exact', head: true }).eq('user_id', user.id),
+                    supabase.from('sprint_plans').select('*', { count: 'exact', head: true }).eq('user_id', user.id)
+                ]);
+
+                setStats({
+                    prdsCreated: prdCount || 0,
+                    storiesGenerated: storyCount || 0,
+                    sprintsPlanned: sprintCount || 0,
+                });
             }
         };
-        fetchUser();
-
-        // Load stats from localStorage
-        const prds = JSON.parse(localStorage.getItem('pm_prds') || '[]');
-        const stories = JSON.parse(localStorage.getItem('pm_stories') || '[]');
-        const sprints = JSON.parse(localStorage.getItem('pm_sprints') || '[]');
-        setStats({
-            prdsCreated: prds.length,
-            storiesGenerated: stories.length,
-            sprintsPlanned: sprints.length,
-        });
+        fetchUserAndStats();
     }, []);
+
+    const handleDownloadReport = async () => {
+        setIsDownloading(true);
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return;
+
+            const [prds, stories, sprints] = await Promise.all([
+                supabase.from('prds').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+                supabase.from('user_stories').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+                supabase.from('sprint_plans').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
+            ]);
+
+            const element = document.createElement('div');
+            let innerHTML = `
+                <div style="padding: 40px; font-family: sans-serif; color: #333; line-height: 1.6;">
+                    <h1 style="color: #ef4444; border-bottom: 2px solid #ef4444; padding-bottom: 10px;">3.0 Labs PM Intelligence Report</h1>
+                    <p style="color: #666; font-size: 12px;">Generated on: ${new Date().toLocaleString()}</p>
+                    <br/>
+            `;
+
+            innerHTML += `<h2 style="color: #ef4444; margin-top: 30px; border-bottom: 1px solid #ddd;">📄 Product Requirements Documents</h2>`;
+            if (prds.data?.length) {
+                prds.data.forEach((prd: any) => {
+                    innerHTML += `
+                        <div style="margin-bottom: 30px;">
+                            <h3 style="color: #1a1c24;">${prd.title}</h3>
+                            <p style="color: #999; font-size: 10px;">Created: ${new Date(prd.created_at).toLocaleDateString()}</p>
+                            <div style="white-space: pre-wrap; margin-top: 10px; font-size: 13px;">${prd.content}</div>
+                        </div>
+                        <hr style="border: 0; border-top: 1px solid #eee;"/>
+                    `;
+                });
+            } else { innerHTML += `<p>No PRDs found.</p>`; }
+
+            innerHTML += `<h2 style="color: #ef4444; margin-top: 40px; border-bottom: 1px solid #ddd;">👥 User Stories</h2>`;
+            if (stories.data?.length) {
+                stories.data.forEach((story: any) => {
+                    innerHTML += `
+                        <div style="margin-bottom: 30px;">
+                            <h3 style="color: #1a1c24;">Feature: ${story.feature}</h3>
+                            <p style="color: #999; font-size: 10px;">Created: ${new Date(story.created_at).toLocaleDateString()}</p>
+                            <div style="white-space: pre-wrap; margin-top: 10px; font-size: 13px;">${story.content}</div>
+                        </div>
+                        <hr style="border: 0; border-top: 1px solid #eee;"/>
+                    `;
+                });
+            } else { innerHTML += `<p>No User Stories found.</p>`; }
+
+            innerHTML += `<h2 style="color: #ef4444; margin-top: 40px; border-bottom: 1px solid #ddd;">📅 Sprint Plans</h2>`;
+            if (sprints.data?.length) {
+                sprints.data.forEach((sprint: any) => {
+                    innerHTML += `
+                        <div style="margin-bottom: 30px;">
+                            <h3 style="color: #1a1c24;">Duration: ${sprint.duration}</h3>
+                            <p style="color: #999; font-size: 10px;">Created: ${new Date(sprint.created_at).toLocaleDateString()}</p>
+                            <p><strong>Backlog:</strong></p>
+                            <div style="white-space: pre-wrap; font-size: 12px; font-style: italic;">${sprint.backlog}</div>
+                            <div style="white-space: pre-wrap; margin-top: 10px; font-size: 13px;">${sprint.content}</div>
+                        </div>
+                        <hr style="border: 0; border-top: 1px solid #eee;"/>
+                    `;
+                });
+            } else { innerHTML += `<p>No Sprint Plans found.</p>`; }
+
+            innerHTML += `</div>`;
+            element.innerHTML = innerHTML;
+
+            const opt = {
+                margin: 10,
+                filename: `PM_Intelligence_Report_${new Date().toISOString().split('T')[0]}.pdf`,
+                image: { type: 'jpeg' as 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2 },
+                jsPDF: { unit: 'mm' as 'mm', format: 'a4' as 'a4', orientation: 'portrait' as 'portrait' }
+            };
+
+            await html2pdf().set(opt).from(element).save();
+        } catch (error) {
+            console.error('Error downloading report:', error);
+        } finally {
+            setIsDownloading(false);
+        }
+    };
 
     const handleSignOut = async () => {
         await supabase.auth.signOut();
@@ -84,7 +173,7 @@ export function PMDashboard() {
     ];
 
     return (
-        <div className="flex h-screen w-full overflow-hidden bg-[#050505] text-white">
+        <div className={`flex h-screen w-full overflow-hidden transition-colors duration-300 ${theme === 'dark' ? 'bg-[#050505] text-white' : 'bg-slate-50 text-slate-900'}`}>
             {/* Mobile Sidebar Overlay */}
             {sidebarOpen && (
                 <div
@@ -95,7 +184,8 @@ export function PMDashboard() {
 
             {/* Sidebar */}
             <aside className={`
-        fixed inset-y-0 left-0 z-40 w-64 bg-[#0B0C10] border-r border-white/10 transform transition-transform duration-300 ease-in-out flex flex-col pt-6 pb-4
+        fixed inset-y-0 left-0 z-40 w-64 border-r transform transition-transform duration-300 ease-in-out flex flex-col pt-6 pb-4
+        ${theme === 'dark' ? 'bg-[#0B0C10] border-white/10' : 'bg-white border-slate-200'}
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
       `}>
                 <div className="flex items-center justify-between px-6 mb-8 relative">
@@ -130,6 +220,11 @@ export function PMDashboard() {
                         <li>
                             <Link to="/history" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
                                 <History className="w-5 h-5 mr-3 opacity-80" /> Meeting History
+                            </Link>
+                        </li>
+                        <li>
+                            <Link to="/ai-chat" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
+                                <Brain className="w-5 h-5 mr-3 opacity-80" /> 3.0 Agent
                             </Link>
                         </li>
                         <li className="pt-4 px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">PM Agent</li>
@@ -202,14 +297,26 @@ export function PMDashboard() {
                 <div className="absolute top-1/3 right-1/4 w-60 h-60 bg-red-500/10 rounded-full blur-[80px] animate-orb-pulse pointer-events-none"></div>
                 <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-red-500/50 to-transparent animate-shimmer z-20"></div>
 
-                <header className="flex items-center justify-between px-4 md:px-10 py-6 bg-[#0B0C10]/80 backdrop-blur-xl border-b border-white/5 z-30 flex-shrink-0">
+                <header className={`flex items-center justify-between px-4 md:px-10 py-6 backdrop-blur-xl border-b z-30 flex-shrink-0 ${theme === 'dark' ? 'bg-[#0B0C10]/80 border-white/5' : 'bg-white/80 border-slate-200'}`}>
                     <div>
-                        <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-3">
+                        <h1 className={`text-2xl font-bold tracking-tight flex items-center gap-3 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
                             <Sparkles className="w-7 h-7 text-red-500 animate-pulse" />
                             Product Manager AI Agent
                         </h1>
                         <p className="text-gray-400 text-sm mt-1">AI-powered tools to supercharge your product management workflow</p>
                     </div>
+                    <button
+                        onClick={handleDownloadReport}
+                        disabled={isDownloading}
+                        className="flex items-center gap-2 px-6 py-3 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl transition-all shadow-[0_0_20px_rgba(239,68,68,0.3)] hover:shadow-[0_0_30px_rgba(239,68,68,0.5)] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        {isDownloading ? (
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                        ) : (
+                            <Download className="w-5 h-5" />
+                        )}
+                        {isDownloading ? 'Generating...' : 'Download Full Report'}
+                    </button>
                 </header>
 
                 <div className="flex-1 overflow-y-auto px-4 md:px-10 py-8 z-10">

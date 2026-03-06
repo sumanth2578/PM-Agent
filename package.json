@@ -14,11 +14,15 @@
     "@google/generative-ai": "^0.24.1",
     "@huggingface/inference": "^2.6.4",
     "@supabase/supabase-js": "^2.39.7",
+    "html2pdf.js": "^0.14.0",
     "lucide-react": "^0.344.0",
+    "mermaid": "^11.12.3",
     "react": "^18.3.1",
     "react-calendar": "^6.0.0",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.22.2"
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^6.22.2",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",

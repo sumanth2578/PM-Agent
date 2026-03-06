@@ -7,6 +7,8 @@ import { PMDashboard } from './components/PMDashboard';
 import { PRDGenerator } from './components/PRDGenerator';
 import { UserStoriesGenerator } from './components/UserStoriesGenerator';
 import { SprintPlanner } from './components/SprintPlanner';
+import KnowledgeChat from './components/KnowledgeChat';
+import { ReminderManager } from './components/ReminderManager';
 import { CursorGlow } from './components/CursorGlow';
 import { ThemeProvider } from './context/ThemeContext';
 import { supabase } from './lib/supabase';
@@ -31,6 +33,7 @@ function App() {
 
   return (
     <ThemeProvider>
+      <ReminderManager />
       <CursorGlow />
       <Router>
         <Routes>
@@ -58,6 +61,10 @@ function App() {
           <Route
             path="/sprint-planner"
             element={session ? <SprintPlanner /> : <Navigate to="/auth" />}
+          />
+          <Route
+            path="/ai-chat"
+            element={session ? <KnowledgeChat /> : <Navigate to="/auth" />}
           />
           <Route path="/auth" element={<Auth />} />
         </Routes>

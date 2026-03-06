@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Mic, MicOff, Clock, History, LogOut, Settings, Menu, Monitor, Upload, CheckCircle, Sun, Moon, Sparkles, FileText, Users, Calendar as CalendarIcon } from 'lucide-react';
+import { Mic, MicOff, Clock, History, LogOut, Settings, Menu, Monitor, Upload, CheckCircle, Sun, Moon, Sparkles, FileText, Users, Calendar as CalendarIcon, Home, Brain } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -118,6 +118,8 @@ export function MeetingSummarizer() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const durationIntervalRef = useRef<number | null>(null);
+  const activeStreamsRef = useRef<MediaStream[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const maxRecordingDuration = 7200; // Increased to 2 hours (7200 seconds)
 
   useEffect(() => {
@@ -142,10 +144,6 @@ export function MeetingSummarizer() {
   }, []);
 
   useEffect(() => {
-    const history = localStorage.getItem('meetingSummaryHistory');
-    if (history) {
-      setSummaryHistory(JSON.parse(history));
-    }
     return () => {
       if (durationIntervalRef.current) {
         clearInterval(durationIntervalRef.current);
@@ -202,6 +200,8 @@ export function MeetingSummarizer() {
       }
 
       let stream: MediaStream;
+      activeStreamsRef.current = [];
+
       if (mode === 'microphone') {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -210,21 +210,56 @@ export function MeetingSummarizer() {
             autoGainControl: true
           }
         });
+        activeStreamsRef.current.push(stream);
       } else {
-        stream = await navigator.mediaDevices.getDisplayMedia({
+        const displayStream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
           audio: true
         });
+        activeStreamsRef.current.push(displayStream);
+
         // We only want audio, so stop video tracks immediately
-        stream.getVideoTracks().forEach(track => track.stop());
+        displayStream.getVideoTracks().forEach(track => track.stop());
 
         // Ensure there's actually an audio track
-        if (stream.getAudioTracks().length === 0) {
+        if (displayStream.getAudioTracks().length === 0) {
+          displayStream.getTracks().forEach(t => t.stop());
           throw new Error('No audio track selected. Make sure to check "Share audio" when sharing a tab.');
         }
 
+        // Try to capture microphone as well to mix
+        let micStream: MediaStream | null = null;
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            }
+          });
+          activeStreamsRef.current.push(micStream);
+        } catch (micErr) {
+          console.warn('Microphone access denied or unavailable during tab capture:', micErr);
+        }
+
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        audioContextRef.current = audioContext;
+        const dest = audioContext.createMediaStreamDestination();
+
+        // Add tab audio to mixer
+        const tabSource = audioContext.createMediaStreamSource(new MediaStream([displayStream.getAudioTracks()[0]]));
+        tabSource.connect(dest);
+
+        // Add mic audio to mixer if available
+        if (micStream && micStream.getAudioTracks().length > 0) {
+          const micSource = audioContext.createMediaStreamSource(new MediaStream([micStream.getAudioTracks()[0]]));
+          micSource.connect(dest);
+        }
+
+        stream = dest.stream;
+
         // When the user clicks "Stop sharing" on the browser's native UI
-        stream.getAudioTracks()[0].onended = () => {
+        displayStream.getAudioTracks()[0].onended = () => {
           if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
             stopRecording();
           }
@@ -372,6 +407,18 @@ export function MeetingSummarizer() {
 
       mediaRecorderRef.current.stop();
       mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+
+      // Stop all active original streams (tab, mic)
+      activeStreamsRef.current.forEach(stream => {
+        stream.getTracks().forEach(track => track.stop());
+      });
+      activeStreamsRef.current = [];
+
+      // Close AudioContext
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(console.error);
+        audioContextRef.current = null;
+      }
     });
 
     try {
@@ -416,9 +463,7 @@ export function MeetingSummarizer() {
           summary: result.summary || '',
           transcript: result.transcription
         };
-        const updatedHistory = [newSummary, ...summaryHistory];
-        setSummaryHistory(updatedHistory);
-        localStorage.setItem('meetingSummaryHistory', JSON.stringify(updatedHistory));
+        setSummaryHistory(updatedHistory => [newSummary, ...updatedHistory]);
         saveMeetingToDatabase(newSummary);
 
         // Auto-generate PM outputs from summary
@@ -474,9 +519,8 @@ export function MeetingSummarizer() {
         summary: result.summary || '',
         transcript: result.transcription
       };
-      const updatedHistory = [newSummary, ...summaryHistory];
-      setSummaryHistory(updatedHistory);
-      localStorage.setItem('meetingSummaryHistory', JSON.stringify(updatedHistory));
+      setSummaryHistory(updatedHistory => [newSummary, ...updatedHistory]);
+      saveMeetingToDatabase(newSummary);
 
       // Auto-generate PM outputs from summary
       if (result.summary) {
@@ -534,10 +578,11 @@ export function MeetingSummarizer() {
   const extractMeetingDetails = (input: string) => {
     let details: typeof meetingDetails = {};
     try {
-      // Extract meeting link
-      const meetRegex = /(https:\/\/meet\.google\.com\/[a-zA-Z0-9\-]+)/;
-      const zoomRegex = /(https:\/\/zoom\.us\/j\/[^\s]+)/;
-      const teamsRegex = /(https:\/\/teams\.microsoft\.com\/l\/meetup-join\/[^\s]+)/;
+      // Improved Link extraction
+      const meetRegex = /(https:\/\/meet\.google\.com\/[a-z0-9-]+)/i;
+      const zoomRegex = /(https:\/\/(?:[a-z0-9-]+\.)?zoom\.us\/(?:j|my)\/[a-z0-9?=-]+)/i;
+      const teamsRegex = /(https:\/\/teams\.microsoft\.com\/l\/meetup-join\/[a-zA-Z0-9%._-]+)/i;
+
       let link = '';
       if (meetRegex.test(input)) {
         link = input.match(meetRegex)?.[1] || '';
@@ -549,61 +594,49 @@ export function MeetingSummarizer() {
         link = input.match(teamsRegex)?.[1] || '';
         details.platform = 'Microsoft Teams';
       }
-      if (link) {
-        details.link = link;
+
+      if (link) details.link = link;
+
+      // Extract date and time - looking for common invite patterns
+      // Handles: "Wednesday, March 6 · 2:00 – 3:00pm", "2024-03-06 14:00", etc.
+      const datePatterns = [
+        /([A-Za-z]+, [A-Za-z]+ \d{1,2}(?:, \d{4})?)/, // "Wednesday, March 6, 2024"
+        /(\d{4}-\d{2}-\d{2})/, // "2024-03-06"
+        /(\d{1,2}\/\d{1,2}\/\d{4})/ // "03/06/2024"
+      ];
+
+      const timePatterns = [
+        /([0-9]{1,2}:[0-9]{2})\s*(?:am|pm)?\s*[–-]\s*([0-9]{1,2}:[0-9]{2})\s*(am|pm)/i, // "2:00 - 3:00pm"
+        /([0-9]{1,2}:[0-9]{2})\s*(am|pm)\s*[–-]\s*([0-9]{1,2}:[0-9]{2})\s*(am|pm)/i, // "2:00pm - 3:00pm"
+        /([0-9]{1,2}:[0-9]{2})/ // Fallback for single time
+      ];
+
+      for (const pattern of datePatterns) {
+        const match = input.match(pattern);
+        if (match) {
+          details.date = match[1];
+          break;
+        }
       }
 
-      // Extract date and time from a line like "Tuesday, July 15 · 6:00 – 7:00pm"
-      const dateTimeLine = input.split('\n').find(line =>
-        /[A-Za-z]+,\s+[A-Za-z]+\s+\d{1,2}\s*·\s*[0-9]{1,2}:[0-9]{2}\s*[–-]\s*[0-9]{1,2}:[0-9]{2}(am|pm)?/i.test(line)
-      );
-      if (dateTimeLine) {
-        const dateRegex = /([A-Za-z]+,\s+[A-Za-z]+\s+\d{1,2})/;
-        const timeRegex = /([0-9]{1,2}:[0-9]{2})\s*[–-]\s*([0-9]{1,2}:[0-9]{2})(am|pm)?/i;
-        const dateMatch = dateTimeLine.match(dateRegex);
-        const timeMatch = dateTimeLine.match(timeRegex);
-        if (dateMatch) {
-          details.date = dateMatch[1];
-        }
-        if (timeMatch) {
-          // Parse start and end time with am/pm
-          let start = timeMatch[1];
-          let end = timeMatch[2];
-          let endPeriod = timeMatch[3] || '';
-          // If end time has am/pm, use it; otherwise, try to infer from context (not robust)
-          details.time = `${start} - ${end}${endPeriod}`;
-          // Duration calculation (handle am/pm correctly)
-          const parseTime = (t: string, period: string) => {
-            let [h, m] = t.split(':').map(Number);
-            if (period.toLowerCase() === 'pm' && h < 12) h += 12;
-            if (period.toLowerCase() === 'am' && h === 12) h = 0;
-            return h * 60 + m;
-          };
-          // Try to get am/pm for start time from context (not always possible)
-          let startPeriod = '';
-          // If endPeriod exists, and start < end, assume same period
-          if (endPeriod) {
-            startPeriod = endPeriod;
+      for (const pattern of timePatterns) {
+        const match = input.match(pattern);
+        if (match) {
+          details.time = match[0];
+          // Simple duration guess
+          if (match[1] && match[2]) {
+            details.duration = "60 min"; // Default to 60 if we can't calculate perfectly
           }
-          const startMinutes = parseTime(start, startPeriod);
-          const endMinutes = parseTime(end, endPeriod);
-          let durationMin = endMinutes - startMinutes;
-          if (durationMin <= 0) durationMin += 12 * 60; // handle overnight or missing am/pm
-          details.duration = `${durationMin} min`;
+          break;
         }
       }
 
-      // Extract time zone
-      const tzLine = input.split('\n').find(line => /Time zone:/i.test(line));
-      if (tzLine) {
-        const tzMatch = tzLine.match(/Time zone:\s*([^\n]+)/i);
-        if (tzMatch) {
-          details.timezone = tzMatch[1].trim();
-        }
-      }
+      // Time zone
+      const tzMatch = input.match(/(?:Time zone|GMT|UTC):\s*([^\n]+)/i);
+      if (tzMatch) details.timezone = tzMatch[1].trim();
 
-      if (!details.platform) {
-        details.error = 'No supported meeting link found.';
+      if (!details.platform || !details.link) {
+        details.error = 'Could not find a valid meeting link.';
       }
     } catch (e) {
       details.error = 'Failed to parse meeting details.';
@@ -612,7 +645,7 @@ export function MeetingSummarizer() {
   };
 
   // Add this function to save meeting to Supabase for the logged-in user
-  const saveMeetingToDatabase = async (meeting: MeetingSummary) => {
+  const saveMeetingToDatabase = async (meeting: MeetingSummary, isCalendar = false) => {
     if (!userEmail) return;
     try {
       await supabase.from('meetings').insert([
@@ -621,11 +654,13 @@ export function MeetingSummarizer() {
           user_email: userEmail,
           date: meeting.date,
           duration: meeting.duration,
-          transcript: meeting.transcript
+          transcript: meeting.transcript,
+          summary: meeting.summary || '',
+          is_calendar: isCalendar
         }
       ]);
     } catch (err) {
-      // error logging only
+      console.error('Error saving to DB:', err);
     }
   };
 
@@ -637,33 +672,33 @@ export function MeetingSummarizer() {
 
   // New function to explicitly add the extracted meeting
   const handleAddExtractedMeeting = () => {
-    if (meetingDetails.platform && meetingDetails.date && meetingDetails.time && meetingDetails.link) {
+    // Only require link and platform if we can fallback for date/time
+    if (meetingDetails.platform && meetingDetails.link) {
       let meetingDate = new Date();
-      try {
-        const dateParts = meetingDetails.date.split(',');
-        if (dateParts.length === 2) {
-          const [_weekday, rest] = dateParts;
-          const [month, day] = rest.trim().split(' ');
-          const year = new Date().getFullYear();
-          meetingDate = new Date(`${month} ${day}, ${year}`);
-        }
-      } catch { }
+      if (meetingDetails.date) {
+        try {
+          meetingDate = new Date(meetingDetails.date);
+          // If invalid date, fallback to today
+          if (isNaN(meetingDate.getTime())) meetingDate = new Date();
+        } catch { }
+      }
 
       const newMeeting: MeetingSummary = {
         id: Date.now().toString(),
         date: meetingDate.toISOString(),
-        duration: meetingDetails.duration ? parseInt(meetingDetails.duration) : 0,
+        duration: meetingDetails.duration ? parseInt(meetingDetails.duration) : 60,
         summary: `${meetingDetails.platform} Meeting`,
-        transcript: `Link: ${meetingDetails.link}\nDate: ${meetingDetails.date}\nTime: ${meetingDetails.time}\nDuration: ${meetingDetails.duration || ''}\nTimeZone: ${meetingDetails.timezone || ''}`
+        transcript: `Link: ${meetingDetails.link}\nDate: ${meetingDetails.date || 'Today'}\nTime: ${meetingDetails.time || 'TBD'}\nDuration: ${meetingDetails.duration || '60 min'}\nTimeZone: ${meetingDetails.timezone || ''}`
       };
 
       setCalendarMeetings(prev => [newMeeting, ...prev]);
-      saveMeetingToDatabase(newMeeting);
+      saveMeetingToDatabase(newMeeting, true);
 
-      // Reset extraction state after adding
       setMeetingDetails({});
       setMeetingLink('');
       setError(null);
+    } else {
+      setMeetingDetails(prev => ({ ...prev, error: 'Link and platform are required.' }));
     }
   };
 
@@ -681,66 +716,51 @@ export function MeetingSummarizer() {
   }, {});
 
   // Add this function to remove a meeting by id
-  const removeMeeting = (id: string) => {
-    setCalendarMeetings(prev => prev.filter(m => m.id !== id));
+  const removeMeeting = async (id: string) => {
+    try {
+      await supabase.from('meetings').delete().eq('id', id);
+      setCalendarMeetings(prev => prev.filter(m => m.id !== id));
+      setSummaryHistory(prev => prev.filter(m => m.id !== id));
+    } catch (err) {
+      console.error('Error removing meeting:', err);
+    }
   };
 
-  // Remove past meetings automatically
+  // Remove very old meetings automatically (older than 2 days)
   useEffect(() => {
     setCalendarMeetings(prev =>
       prev.filter(m => {
         const meetingDate = new Date(m.date);
-        return meetingDate >= new Date();
+        const twoDaysAgo = new Date();
+        twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+        return meetingDate >= twoDaysAgo;
       })
     );
   }, [calendarMeetings.length]);
 
-  // Persist calendarMeetings to localStorage
+  // Load meetings from Supabase when userDetails are ready
   useEffect(() => {
-    localStorage.setItem('calendarMeetings', JSON.stringify(calendarMeetings));
-  }, [calendarMeetings]);
+    const fetchAllMeetings = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data, error } = await supabase
+          .from('meetings')
+          .select('*')
+          .eq('user_email', user.email)
+          .order('date', { ascending: false });
 
-  // Load calendarMeetings from localStorage on mount
-  useEffect(() => {
-    const storedMeetings = localStorage.getItem('calendarMeetings');
-    if (storedMeetings) {
-      setCalendarMeetings(JSON.parse(storedMeetings));
-    }
-  }, []);
-
-  // Fetch meetings from Supabase for the logged-in user
-  const fetchUserMeetingsFromDatabase = async (email: string) => {
-    if (!email) return [];
-    try {
-      const { data, error } = await supabase
-        .from('meetings')
-        .select('*')
-        .eq('user_email', email);
-      if (error) {
-        console.error('Failed to fetch meetings from database:', error);
-        return [];
-      }
-      return data || [];
-    } catch (err) {
-      console.error('Failed to fetch meetings from database:', err);
-      return [];
-    }
-  };
-
-  // Load meetings from Supabase when userEmail changes (login)
-  useEffect(() => {
-    if (userEmail) {
-      (async () => {
-        const dbMeetings = await fetchUserMeetingsFromDatabase(userEmail);
-        if (dbMeetings.length > 0) {
-          setCalendarMeetings(dbMeetings);
+        if (!error && data) {
+          setCalendarMeetings(data.filter(m => m.is_calendar));
+          setSummaryHistory(data.filter(m => !m.is_calendar));
         }
-      })();
-    }
+      }
+    };
+    fetchAllMeetings();
   }, [userEmail]);
 
+
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-[#050505] text-white">
+    <div className={`flex h-screen w-full overflow-hidden transition-colors duration-300 ${theme === 'dark' ? 'bg-[#050505] text-white' : 'bg-slate-50 text-slate-900'}`}>
       {/* Mobile Sidebar Overlay */}
       {/* Massive Background Branding Text - RED THEME */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden z-0 select-none">
@@ -813,13 +833,18 @@ export function MeetingSummarizer() {
           <ul className="space-y-1 px-3">
             <li className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">Meetings</li>
             <li>
-              <Link to="/" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                <span className="mr-3 text-lg opacity-80">🏠</span> Home
+              <Link to="/summarizer" className={`${location.pathname === '/summarizer' ? 'bg-white/10 text-white' : 'text-gray-300'} hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors flex items-center`}>
+                <Home className="w-5 h-5 mr-3 opacity-80" /> Dashboard
               </Link>
             </li>
             <li>
-              <Link to="/history" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
+              <Link to="/history" className={`${location.pathname === '/history' ? 'bg-white/10 text-white' : 'text-gray-300'} hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors flex items-center`}>
                 <History className="w-5 h-5 mr-3 opacity-80" /> Meeting History
+              </Link>
+            </li>
+            <li>
+              <Link to="/ai-chat" className={`${location.pathname === '/ai-chat' ? 'bg-red-600/10 text-red-500' : 'text-gray-300'} hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors flex items-center`}>
+                <Brain className="w-5 h-5 mr-3 opacity-80" /> 3.0 Agent
               </Link>
             </li>
             <li className="pt-4 px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">PM Agent</li>
@@ -896,8 +921,8 @@ export function MeetingSummarizer() {
             <div className="flex flex-wrap gap-2 sm:gap-3 z-40">
               <button
                 className={`px-4 py-2.5 font-bold rounded-xl transition-all flex items-center shadow-lg group active:scale-95 ${isRecording && recordingMode === 'microphone'
-                    ? 'bg-red-500 text-white animate-pulse border border-red-400'
-                    : 'bg-white/5 text-white hover:bg-white/10 border border-white/10 hover:border-red-500/50'
+                  ? 'bg-red-500 text-white animate-pulse border border-red-400'
+                  : 'bg-white/5 text-white hover:bg-white/10 border border-white/10 hover:border-red-500/50'
                   }`}
                 onClick={() => isRecording ? stopRecording() : startRecording('microphone')}
                 disabled={!audioSupported || !apiStatus.gemini || !apiStatus.huggingface || (isRecording && recordingMode !== 'microphone')}
@@ -908,8 +933,8 @@ export function MeetingSummarizer() {
 
               <button
                 className={`px-4 py-2.5 font-bold rounded-xl transition-all flex items-center shadow-lg group active:scale-95 ${isRecording && recordingMode === 'tab'
-                    ? 'bg-red-600 text-white animate-pulse border border-red-500'
-                    : 'bg-white/5 text-white hover:bg-white/10 border border-white/10 hover:border-red-500/50'
+                  ? 'bg-red-600 text-white animate-pulse border border-red-500'
+                  : 'bg-white/5 text-white hover:bg-white/10 border border-white/10 hover:border-red-500/50'
                   }`}
                 onClick={() => isRecording ? stopRecording() : startRecording('tab')}
                 disabled={!audioSupported || !apiStatus.gemini || !apiStatus.huggingface || (isRecording && recordingMode !== 'tab')}
@@ -1289,7 +1314,7 @@ export function MeetingSummarizer() {
                 </button>
               </div>
             </div>
-            <div className="mb-6 rounded-2xl overflow-hidden bg-white/5 border border-white/10 p-5 shadow-2xl backdrop-blur-xl">
+            <div className={`mb-6 rounded-2xl overflow-hidden border p-5 shadow-2xl backdrop-blur-xl transition-all duration-300 ${theme === 'dark' ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200 shadow-slate-200/50'}`}>
               <Calendar
                 onChange={date => setSelectedDate(date as Date)}
                 value={selectedDate}

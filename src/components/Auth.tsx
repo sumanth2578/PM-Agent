@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Eye, EyeOff, Mail, Lock, AlertCircle, CheckCircle } from 'lucide-react';
+import { useTheme } from '../context/ThemeContext';
 
 export function Auth() {
   const [email, setEmail] = useState('');
@@ -14,6 +15,7 @@ export function Auth() {
   const [message, setMessage] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const { theme } = useTheme();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -76,17 +78,8 @@ export function Auth() {
       if (error.message === 'Invalid login credentials') {
         setError('Invalid email or password. Please try again or create a new account.');
       } else if (error.message === 'Email not confirmed') {
-        const { error: signUpError } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            emailRedirectTo: window.location.origin,
-          }
-        });
-
-        if (signUpError) {
-          setError(signUpError.message);
-        }
+        setError('Email not confirmed. Please check your inbox or disable "Confirm email" in your Supabase Dashboard (Authentication -> Providers -> Email).');
+        setMessage('Note: If you are running locally, you can disable email confirmation in Supabase settings to log in immediately.');
       } else {
         setError(error.message);
       }
@@ -124,7 +117,7 @@ export function Auth() {
       }
     } else {
       setMessage('Account created! Please check your email and verify your address before signing in.');
-      // Do not switch to signin or clear password fields until user verifies email
+      setError('Tip: If you don\'t receive an email, disable "Confirm email" in your Supabase Dashboard to skip this step.');
     }
     setLoading(false);
   };
@@ -146,7 +139,7 @@ export function Auth() {
   };
 
   return (
-    <div className="min-h-screen w-full flex bg-[#050505] overflow-hidden relative font-sans selection:bg-indigo-500/30">
+    <div className={`min-h-screen w-full flex overflow-hidden relative font-sans selection:bg-indigo-500/30 transition-colors duration-300 ${theme === 'dark' ? 'bg-[#050505]' : 'bg-slate-50'}`}>
       {/* Massive Background Branding Text - RED THEME */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden z-0 select-none">
         <div className="text-[25vw] font-black text-red-500/[0.03] whitespace-nowrap leading-none tracking-tighter transform -rotate-12 translate-x-[-5%] translate-y-[5%] select-none animate-pulse-slow">
@@ -180,7 +173,34 @@ export function Auth() {
       </div>
 
 
-      {/* Left: Form Section */}
+      {/* Aero-layer: Flying Planes & Clouds */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden z-0">
+        <div className="absolute top-1/4 -left-20 animate-plane-fly opacity-20">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="text-red-500 transform -rotate-45">
+            <path d="M22 2L2 8.66025L11.5 12.5L22 2Z" fill="currentColor" fillOpacity="0.2" />
+            <path d="M22 2L11.5 12.5V22L15.3397 14.8397L22 2Z" fill="currentColor" fillOpacity="0.3" />
+            <path d="M22 2L2 8.66025L11.5 12.5L15.3397 14.8397L22 2Z" stroke="currentColor" />
+          </svg>
+        </div>
+        <div className="absolute top-2/3 -right-20 animate-plane-fly-alt opacity-10" style={{ animationDelay: '7s' }}>
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="text-purple-500 transform rotate-[135deg]">
+            <path d="M22 2L2 8.66025L11.5 12.5L22 2Z" fill="currentColor" fillOpacity="0.2" />
+            <path d="M22 2L11.5 12.5V22L15.3397 14.8397L22 2Z" fill="currentColor" fillOpacity="0.3" />
+            <path d="M22 2L2 8.66025L11.5 12.5L15.3397 14.8397L22 2Z" stroke="currentColor" />
+          </svg>
+        </div>
+        <div className="absolute top-1/2 left-1/3 animate-plane-fly opacity-15" style={{ animationDelay: '12s', animationDuration: '20s' }}>
+          <svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="text-pink-500 transform -rotate-12">
+            <path d="M22 2L2 8.66025L11.5 12.5L22 2Z" fill="currentColor" fillOpacity="0.2" />
+            <path d="M22 2L11.5 12.5V22L15.3397 14.8397L22 2Z" fill="currentColor" fillOpacity="0.3" />
+            <path d="M22 2L2 8.66025L11.5 12.5L15.3397 14.8397L22 2Z" stroke="currentColor" />
+          </svg>
+        </div>
+
+        {/* Drifting Particles/Clouds */}
+        <div className="absolute top-20 left-10 w-64 h-32 bg-red-600/5 blur-[60px] rounded-full animate-cloud"></div>
+        <div className="absolute bottom-40 right-20 w-80 h-40 bg-purple-600/5 blur-[80px] rounded-full animate-cloud" style={{ animationDelay: '5s' }}></div>
+      </div>
       <div className="flex flex-col justify-center px-6 sm:px-12 md:px-16 py-12 w-full lg:max-w-xl bg-white/[0.01] backdrop-blur-[40px] border-r border-white/10 relative z-10 transition-all animate-reveal shadow-[20px_0_50px_rgba(0,0,0,0.5)]">
         {/* Animated Gradient Line on Border */}
         <div className="absolute right-0 top-0 bottom-0 w-[1px] bg-gradient-to-b from-transparent via-indigo-500/50 to-transparent animate-shimmer-v"></div>

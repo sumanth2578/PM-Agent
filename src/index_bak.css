@@ -605,25 +605,21 @@
     color: #0f172a;
 }
 
-/* Background overrides with softer colors base classes */
+/* Background overrides with softer colors */
 .light-theme .bg-\[\#050505\],
-.light-theme [class*="bg-[#050505]"],
-.light-theme .bg-black {
+.light-theme .bg-\[#050505\] {
     background-color: #f8fafc !important;
 }
 
 .light-theme .bg-\[\#0B0C10\],
-.light-theme [class*="bg-[#0B0C10]"],
-.light-theme .bg-zinc-950 {
+.light-theme .bg-\[#0B0C10\] {
     background-color: #ffffff !important;
 }
 
-.light-theme .bg-\[\#0B0C10\]\/80,
-.light-theme [class*="bg-[#0B0C10]/80"] {
+.light-theme .bg-\[\#0B0C10\]\/80 {
     background-color: rgba(255, 255, 255, 0.85) !important;
     backdrop-filter: blur(12px);
 }
-
 
 /* Text and Border colors */
 .light-theme .text-white {
@@ -689,7 +685,6 @@
 .light-theme ::selection {
     background-color: rgba(239, 68, 68, 0.1);
 }
-
 /* Mermaid Light Mode Overrides */
 .light-theme .mermaid-container {
     background-color: rgba(239, 68, 68, 0.05) !important;

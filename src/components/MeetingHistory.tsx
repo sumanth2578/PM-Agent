@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Mic, Clock, Trash2, Mail, Edit, Save, History, LogOut, Menu, Home, ChevronRight, ExternalLink, Sun, Moon, Sparkles, FileText, Users, Calendar as CalendarIcon } from 'lucide-react';
+import { Mic, Clock, Trash2, Mail, Edit, Save, History, LogOut, Menu, Home, ChevronRight, ExternalLink, Sun, Moon, Sparkles, FileText, Users, Calendar as CalendarIcon, Brain } from 'lucide-react';
 import { EmailDialog } from './EmailDialog';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
@@ -42,7 +42,6 @@ export function MeetingHistory() {
   const fetchHistory = async (email: string) => {
     setLoading(true);
     try {
-      // Fetch from Supabase
       const { data, error } = await supabase
         .from('meetings')
         .select('*')
@@ -50,16 +49,7 @@ export function MeetingHistory() {
         .order('date', { ascending: false });
 
       if (error) throw error;
-
-      // Also check local storage for any unsynced ones (legacy)
-      const localHistory = localStorage.getItem('meetingSummaryHistory');
-      const parsedLocal = localHistory ? JSON.parse(localHistory) : [];
-
-      // Merge and unique by ID
-      const merged = [...(data || []), ...parsedLocal];
-      const unique = Array.from(new Map(merged.map(m => [m.id, m])).values());
-
-      setSummaryHistory(unique);
+      setSummaryHistory(data || []);
     } catch (err) {
       console.error('Error fetching history:', err);
     } finally {
@@ -86,12 +76,7 @@ export function MeetingHistory() {
       // Delete from Supabase
       await supabase.from('meetings').delete().eq('id', id);
 
-      // Update state
-      const updatedHistory = summaryHistory.filter(summary => summary.id !== id);
-      setSummaryHistory(updatedHistory);
-
-      // Update local storage
-      localStorage.setItem('meetingSummaryHistory', JSON.stringify(updatedHistory));
+      setSummaryHistory(summaryHistory.filter(summary => summary.id !== id));
     } catch (err) {
       console.error('Error deleting:', err);
     }
@@ -127,7 +112,7 @@ export function MeetingHistory() {
   };
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-[#050505] text-white">
+    <div className={`flex h-screen w-full overflow-hidden transition-colors duration-300 ${theme === 'dark' ? 'bg-[#050505] text-white' : 'bg-slate-50 text-slate-900'}`}>
       {/* Mobile Sidebar Overlay */}
       {sidebarOpen && (
         <div
@@ -138,7 +123,8 @@ export function MeetingHistory() {
 
       {/* Shared Sidebar Design */}
       <aside className={`
-        fixed inset-y-0 left-0 z-40 w-64 bg-[#0B0C10] border-r border-white/10 transform transition-transform duration-300 ease-in-out flex flex-col pt-6 pb-4
+        fixed inset-y-0 left-0 z-40 w-64 border-r transform transition-transform duration-300 ease-in-out flex flex-col pt-6 pb-4
+        ${theme === 'dark' ? 'bg-[#0B0C10] border-white/10' : 'bg-white border-slate-200'}
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
       `}>
         <div className="flex items-center justify-between px-6 mb-8 relative">
@@ -186,6 +172,11 @@ export function MeetingHistory() {
             <li>
               <Link to="/history" className="flex items-center bg-white/10 text-white font-medium rounded-xl px-3 py-2.5 transition-colors shadow-sm ring-1 ring-white/10">
                 <History className="w-5 h-5 mr-3 text-red-500" /> Meeting History
+              </Link>
+            </li>
+            <li>
+              <Link to="/ai-chat" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
+                <Brain className="w-5 h-5 mr-3 opacity-80" /> 3.0 Agent
               </Link>
             </li>
             <li className="pt-4 px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">PM Agent</li>
