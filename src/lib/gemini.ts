@@ -639,3 +639,82 @@ Write your supreme response now:
     return "An error occurred while trying to access the AI memory. Please ensure your API keys are valid.";
   }
 }
+
+// =========================================================================
+// NEW PM EXTENSION FUNCTIONS
+// =========================================================================
+
+export async function generateStakeholderPlan(summary: string): Promise<string> {
+  const prompt = `
+You are an expert Program Manager and Communications Director. Based on the following meeting summary, create a Stakeholder Communication Plan.
+
+Meeting Context:
+${summary}
+
+Format your response as a professional Markdown document featuring:
+1. **Key Stakeholders Identified**: (Who needs to know about this? Define their persona/role)
+2. **Key Messages**: (What are the core takeaways they care about?)
+3. **Communication Channels**: (How should we reach them? Email, Slack, All-Hands?)
+4. **Frequency & Next Update**: (When is the next touchpoint?)
+
+Make it highly actionable and concise.
+  `;
+  try {
+    return await callGemini(prompt);
+  } catch (err: any) {
+    console.error('Gemini failed for Stakeholder Plan:', err);
+    try { return await callGroqFallback(prompt, "You are an expert Program Manager. Answer in Markdown."); }
+    catch (e) { return "> ⚠️ **AI Quota Exceeded:** Unable to generate Stakeholder Plan currently."; }
+  }
+}
+
+export async function generateWorkDistribution(summary: string): Promise<string> {
+  const prompt = `
+You are an expert Engineering Manager and Agile Coach. Based on the following meeting summary, create a Work Distribution & Assignment Strategy.
+
+Meeting Context:
+${summary}
+
+Format your response as a professional Markdown document featuring:
+1. **Identified Team Members/Roles**: (Who was mentioned or is implicitly needed?)
+2. **Task Assignments**: (A markdown table mapping Task -> Assignee -> Priority -> Estimated Effort)
+3. **Skill Gaps / Blockers**: (Are we missing someone or something to get this done?)
+4. **Immediate Next Steps (24-48 hours)**: (What needs to happen tomorrow?)
+
+Distribute the actionable work logically.
+  `;
+  try {
+    return await callGemini(prompt);
+  } catch (err: any) {
+    console.error('Gemini failed for Work Distribution:', err);
+    try { return await callGroqFallback(prompt, "You are an expert Engineering Manager. Answer in Markdown."); }
+    catch (e) { return "> ⚠️ **AI Quota Exceeded:** Unable to generate Work Distribution currently."; }
+  }
+}
+
+export async function generateProjectLifecycle(summary: string): Promise<string> {
+  const prompt = `
+You are an expert Project Manager (PMP certified). Based on the following meeting summary, define the Project Lifecycle and phased approach for the initiatives discussed.
+
+Meeting Context:
+${summary}
+
+Format your response as a professional Markdown document featuring:
+1. **Current Phase**: (e.g., Discovery, Planning, Execution, Review)
+2. **Proposed Lifecycle Milestones**:
+   - Phase 1: [Name] - [Goal] (Estimated timeline)
+   - Phase 2: [Name] - [Goal] (Estimated timeline)
+   - Phase 3: [Name] - [Goal] (Estimated timeline)
+3. **Critical Path & Dependencies**: (What must happen chronologically?)
+4. **Risk Management Log**: (Identify 2-3 risks and mitigation strategies)
+
+Keep it realistic and structured.
+  `;
+  try {
+    return await callGemini(prompt);
+  } catch (err: any) {
+    console.error('Gemini failed for Project Lifecycle:', err);
+    try { return await callGroqFallback(prompt, "You are an expert Project Manager. Answer in Markdown."); }
+    catch (e) { return "> ⚠️ **AI Quota Exceeded:** Unable to generate Project Lifecycle currently."; }
+  }
+}

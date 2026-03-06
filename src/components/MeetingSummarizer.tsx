@@ -4,7 +4,8 @@ import { Mic, MicOff, Clock, History, LogOut, Settings, Menu, Monitor, Upload, C
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { generatePRD, generateUserStories, generateSprintPlan } from '../lib/gemini';
+import { generatePRD, generateUserStories, generateSprintPlan, generateStakeholderPlan, generateWorkDistribution, generateProjectLifecycle } from '../lib/gemini';
+import { useGoogleLogin } from '@react-oauth/google';
 
 import Calendar from 'react-calendar';
 import 'react-calendar/dist/Calendar.css';
@@ -19,6 +20,8 @@ interface MeetingSummary {
   duration: number;
   summary: string;
   transcript: string;
+  notes?: string;
+  is_calendar?: boolean;
 }
 
 type SpeechService = 'gemini';
@@ -64,14 +67,52 @@ export function MeetingSummarizer() {
   const [pmPRD, setPmPRD] = useState<string | null>(null);
   const [pmUserStories, setPmUserStories] = useState<string | null>(null);
   const [pmSprintPlan, setPmSprintPlan] = useState<string | null>(null);
-  const [pmActiveTab, setPmActiveTab] = useState<'prd' | 'stories' | 'sprint'>('prd');
+  const [pmStakeholderPlan, setPmStakeholderPlan] = useState<string | null>(null);
+  const [pmWorkDistribution, setPmWorkDistribution] = useState<string | null>(null);
+  const [pmProjectLifecycle, setPmProjectLifecycle] = useState<string | null>(null);
+  const [pmActiveTab, setPmActiveTab] = useState<'prd' | 'stories' | 'sprint' | 'stakeholder' | 'work' | 'lifecycle'>('prd');
 
-  const generatePMOutputs = async (summaryText: string) => {
+  // Notes state
+  const [editingNotesForId, setEditingNotesForId] = useState<string | null>(null);
+  const [currentNoteText, setCurrentNoteText] = useState('');
+
+  const saveMeetingNote = async (id: string) => {
+    try {
+      const { error } = await supabase.from('meetings').update({ notes: currentNoteText }).eq('id', id);
+      if (error) {
+        // If it fails to update, it might be a new Google Calendar event not saved yet
+        await supabase.from('meetings').insert([{
+          id,
+          user_email: userEmail,
+          date: allMeetingsCombined.find(m => m.id === id)?.date || new Date().toISOString(),
+          duration: allMeetingsCombined.find(m => m.id === id)?.duration || 0,
+          summary: allMeetingsCombined.find(m => m.id === id)?.summary || 'Calendar Event',
+          transcript: allMeetingsCombined.find(m => m.id === id)?.transcript || '',
+          notes: currentNoteText,
+          is_calendar: true
+        }]);
+      }
+
+      setCalendarMeetings(prev => prev.map(m => m.id === id ? { ...m, notes: currentNoteText } : m));
+      setSummaryHistory(prev => prev.map(m => m.id === id ? { ...m, notes: currentNoteText } : m));
+
+    } catch (err) {
+      console.error("Error saving note:", err);
+    }
+    setEditingNotesForId(null);
+  };
+
+  const generatePMOutputs = async (summaryText: string, meetingId: string) => {
     if (!summaryText || summaryText.trim() === '') return;
     setPmLoading(true);
     setPmPRD(null);
     setPmUserStories(null);
     setPmSprintPlan(null);
+    setPmStakeholderPlan(null);
+    setPmWorkDistribution(null);
+    setPmProjectLifecycle(null);
+
+    const { data: { user } } = await supabase.auth.getUser();
 
     // Wait before starting PM calls to avoid rate limiting after summary
     await new Promise(resolve => setTimeout(resolve, 5000));
@@ -81,6 +122,10 @@ export function MeetingSummarizer() {
       const prd = await generatePRD(summaryText).catch((e) => { console.error('PRD error:', e); return 'Failed to generate PRD. Please try again from the PRD Generator page.'; });
       setPmPRD(prd);
 
+      if (user && prd && !prd.startsWith('Failed to')) {
+        await supabase.from('prds').insert([{ user_id: user.id, title: `Meeting PRD - ${new Date().toLocaleDateString()}`, content: prd }]);
+      }
+
       // Small delay between calls
       await new Promise(resolve => setTimeout(resolve, 3000));
 
@@ -88,12 +133,51 @@ export function MeetingSummarizer() {
       const stories = await generateUserStories(summaryText).catch((e) => { console.error('Stories error:', e); return 'Failed to generate user stories. Please try again from the User Stories page.'; });
       setPmUserStories(stories);
 
+      if (user && stories && !stories.startsWith('Failed to')) {
+        await supabase.from('user_stories').insert([{ user_id: user.id, feature: `Meeting Features - ${new Date().toLocaleDateString()}`, content: stories }]);
+      }
+
       // Small delay between calls
       await new Promise(resolve => setTimeout(resolve, 3000));
 
       // Generate Sprint Plan
       const sprint = await generateSprintPlan(summaryText).catch((e) => { console.error('Sprint error:', e); return 'Failed to generate sprint plan. Please try again from the Sprint Planner page.'; });
       setPmSprintPlan(sprint);
+
+      if (user && sprint && !sprint.startsWith('Failed to')) {
+        await supabase.from('sprint_plans').insert([{ user_id: user.id, backlog: `Meeting Backlog - ${new Date().toLocaleDateString()}`, duration: '2 Weeks', content: sprint }]);
+      }
+
+      // Small delay between calls
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      // Generate Stakeholder Comms
+      // @ts-ignore
+      const strPlan = await generateStakeholderPlan(summaryText).catch((e) => { console.error('Stakeholder error:', e); return 'Failed to generate stakeholder plan.'; });
+      setPmStakeholderPlan(strPlan);
+      if (user && strPlan && !strPlan.startsWith('Failed to')) {
+        await supabase.from('stakeholder_comms').insert([{ user_id: user.id, meeting_id: meetingId, content: strPlan }]);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      // Generate Work Distribution
+      // @ts-ignore
+      const workDist = await generateWorkDistribution(summaryText).catch((e) => { console.error('Work dist error:', e); return 'Failed to generate work distribution.'; });
+      setPmWorkDistribution(workDist);
+      if (user && workDist && !workDist.startsWith('Failed to')) {
+        await supabase.from('work_distributions').insert([{ user_id: user.id, meeting_id: meetingId, content: workDist }]);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      // Generate Project Lifecycle
+      // @ts-ignore
+      const lifecycle = await generateProjectLifecycle(summaryText).catch((e) => { console.error('Lifecycle error:', e); return 'Failed to generate project lifecycle.'; });
+      setPmProjectLifecycle(lifecycle);
+      if (user && lifecycle && !lifecycle.startsWith('Failed to')) {
+        await supabase.from('project_lifecycles').insert([{ user_id: user.id, meeting_id: meetingId, content: lifecycle }]);
+      }
     } catch (err) {
       console.error('PM generation error:', err);
     } finally {
@@ -113,7 +197,56 @@ export function MeetingSummarizer() {
   }, []);
 
   const [calendarMeetings, setCalendarMeetings] = useState<MeetingSummary[]>([]);
+  const [isCalendarConnected, setIsCalendarConnected] = useState(false);
+  const [isFetchingCalendar, setIsFetchingCalendar] = useState(false);
 
+  const connectGoogleCalendar = useGoogleLogin({
+    onSuccess: async (tokenResponse) => {
+      setIsFetchingCalendar(true);
+      try {
+        const response = await fetch(
+          "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=" +
+          (new Date(new Date().setFullYear(new Date().getFullYear() - 1))).toISOString() +
+          "&maxResults=50&orderBy=startTime&singleEvents=true",
+          {
+            headers: {
+              Authorization: `Bearer ${tokenResponse.access_token}`,
+            },
+          }
+        );
+        const data = await response.json();
+
+        if (data.items) {
+          const fetchedEvents: MeetingSummary[] = data.items.map((event: any) => {
+            const start = event.start.dateTime || event.start.date;
+            const end = event.end.dateTime || event.end.date;
+
+            // Calculate duration in seconds roughly
+            const durationMs = new Date(end).getTime() - new Date(start).getTime();
+            const durationSec = isNaN(durationMs) ? 1800 : Math.floor(durationMs / 1000);
+
+            return {
+              id: event.id || crypto.randomUUID(),
+              date: start,
+              duration: durationSec,
+              summary: event.summary || 'Untitled Calendar Event',
+              transcript: event.description ? "Calendar Description:\\n" + event.description : "No description provided from Google Calendar."
+            };
+          });
+
+          setCalendarMeetings(fetchedEvents);
+          setIsCalendarConnected(true);
+        }
+      } catch (err) {
+        console.error("Failed to fetch Google Calendar events", err);
+        setError("Failed to sync Google Calendar. Ensure your token is valid.");
+      } finally {
+        setIsFetchingCalendar(false);
+      }
+    },
+    scope: 'https://www.googleapis.com/auth/calendar.readonly',
+    onError: errorResponse => console.error("Google Login Error", errorResponse)
+  });
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -457,7 +590,7 @@ export function MeetingSummarizer() {
         setSummary(result.summary || '');
 
         const newSummary: MeetingSummary = {
-          id: Date.now().toString(),
+          id: crypto.randomUUID(),
           date: new Date().toISOString(),
           duration,
           summary: result.summary || '',
@@ -468,7 +601,7 @@ export function MeetingSummarizer() {
 
         // Auto-generate PM outputs from summary
         if (result.summary) {
-          generatePMOutputs(result.summary);
+          generatePMOutputs(result.summary, newSummary.id);
         }
       } catch (err) {
         console.error('Transcription error:', err);
@@ -513,7 +646,7 @@ export function MeetingSummarizer() {
       setSummary(result.summary || '');
 
       const newSummary: MeetingSummary = {
-        id: Date.now().toString(),
+        id: crypto.randomUUID(),
         date: new Date().toISOString(),
         duration: 0,
         summary: result.summary || '',
@@ -524,7 +657,7 @@ export function MeetingSummarizer() {
 
       // Auto-generate PM outputs from summary
       if (result.summary) {
-        generatePMOutputs(result.summary);
+        generatePMOutputs(result.summary, newSummary.id);
       }
 
       // Clear file input
@@ -648,7 +781,7 @@ export function MeetingSummarizer() {
   const saveMeetingToDatabase = async (meeting: MeetingSummary, isCalendar = false) => {
     if (!userEmail) return;
     try {
-      await supabase.from('meetings').insert([
+      const { error } = await supabase.from('meetings').insert([
         {
           id: meeting.id,
           user_email: userEmail,
@@ -659,6 +792,7 @@ export function MeetingSummarizer() {
           is_calendar: isCalendar
         }
       ]);
+      if (error) console.error("Database Insert Error:", error);
     } catch (err) {
       console.error('Error saving to DB:', err);
     }
@@ -702,13 +836,15 @@ export function MeetingSummarizer() {
     }
   };
 
-  const filteredCalendarMeetings = selectedDate
-    ? calendarMeetings.filter(m =>
+  const allMeetingsCombined = [...summaryHistory, ...calendarMeetings].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  const filteredAllMeetings = selectedDate
+    ? allMeetingsCombined.filter(m =>
       new Date(m.date).toDateString() === selectedDate.toDateString()
     )
-    : calendarMeetings;
+    : allMeetingsCombined;
 
-  const groupedMeetings = filteredCalendarMeetings.reduce((acc: Record<string, MeetingSummary[]>, meeting) => {
+  const groupedMeetings = filteredAllMeetings.reduce((acc: Record<string, MeetingSummary[]>, meeting) => {
     const dateStr = new Date(meeting.date).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     if (!acc[dateStr]) acc[dateStr] = [];
     acc[dateStr].push(meeting);
@@ -1120,6 +1256,9 @@ export function MeetingSummarizer() {
                     { key: 'prd' as const, label: 'PRD', icon: <FileText className="w-4 h-4" />, activeClass: 'bg-red-500/20 text-red-400 border border-red-500/30 shadow-[0_0_15px_rgba(239,68,68,0.15)]' },
                     { key: 'stories' as const, label: 'User Stories', icon: <Users className="w-4 h-4" />, activeClass: 'bg-purple-500/20 text-purple-400 border border-purple-500/30 shadow-[0_0_15px_rgba(168,85,247,0.15)]' },
                     { key: 'sprint' as const, label: 'Sprint Plan', icon: <CalendarIcon className="w-4 h-4" />, activeClass: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.15)]' },
+                    { key: 'stakeholder' as const, label: 'Stakeholders', icon: <Users className="w-4 h-4" />, activeClass: 'bg-blue-500/20 text-blue-400 border border-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.15)]' },
+                    { key: 'work' as const, label: 'Work Dist.', icon: <CheckCircle className="w-4 h-4" />, activeClass: 'bg-orange-500/20 text-orange-400 border border-orange-500/30 shadow-[0_0_15px_rgba(249,115,22,0.15)]' },
+                    { key: 'lifecycle' as const, label: 'Lifecycle', icon: <History className="w-4 h-4" />, activeClass: 'bg-teal-500/20 text-teal-400 border border-teal-500/30 shadow-[0_0_15px_rgba(20,184,166,0.15)]' },
                   ].map(tab => (
                     <button
                       key={tab.key}
@@ -1136,11 +1275,11 @@ export function MeetingSummarizer() {
                 </div>
 
                 {/* Tab Content */}
-                {pmLoading && !pmPRD && !pmUserStories && !pmSprintPlan && (
+                {pmLoading && !pmPRD && !pmUserStories && !pmSprintPlan && !pmStakeholderPlan && !pmWorkDistribution && !pmProjectLifecycle && (
                   <div className="p-8 bg-red-500/5 border border-red-500/20 rounded-2xl flex flex-col items-center space-y-4 animate-pulse">
                     <div className="w-12 h-12 border-4 border-red-500 border-t-transparent rounded-full animate-spin" />
-                    <div className="text-red-400 font-semibold text-lg">AI is generating PM insights...</div>
-                    <div className="text-gray-400 text-sm">Creating PRD, User Stories, and Sprint Plan from your meeting summary</div>
+                    <div className="text-red-400 font-semibold text-lg">AI is generating ALL PM insights...</div>
+                    <div className="text-gray-400 text-sm">Creating 6 professional PM artifacts from your meeting summary</div>
                   </div>
                 )}
 
@@ -1174,15 +1313,48 @@ export function MeetingSummarizer() {
                   </div>
                 )}
 
+                {pmActiveTab === 'stakeholder' && pmStakeholderPlan && (
+                  <div className="p-6 bg-blue-500/5 backdrop-blur-xl border border-blue-500/20 rounded-2xl shadow-xl animate-fade-in-up">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="font-semibold text-blue-400 text-lg flex items-center"><div className="w-2 h-2 bg-blue-500 rounded-full mr-3" />Stakeholder Communication Plan</div>
+                      <button onClick={() => navigator.clipboard.writeText(pmStakeholderPlan)} className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors text-xs">Copy</button>
+                    </div>
+                    <div className="text-gray-300 leading-relaxed whitespace-pre-wrap text-sm">{pmStakeholderPlan}</div>
+                  </div>
+                )}
+
+                {pmActiveTab === 'work' && pmWorkDistribution && (
+                  <div className="p-6 bg-orange-500/5 backdrop-blur-xl border border-orange-500/20 rounded-2xl shadow-xl animate-fade-in-up">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="font-semibold text-orange-400 text-lg flex items-center"><div className="w-2 h-2 bg-orange-500 rounded-full mr-3" />Work Distribution & Task Allocation</div>
+                      <button onClick={() => navigator.clipboard.writeText(pmWorkDistribution)} className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors text-xs">Copy</button>
+                    </div>
+                    <div className="text-gray-300 leading-relaxed whitespace-pre-wrap text-sm">{pmWorkDistribution}</div>
+                  </div>
+                )}
+
+                {pmActiveTab === 'lifecycle' && pmProjectLifecycle && (
+                  <div className="p-6 bg-teal-500/5 backdrop-blur-xl border border-teal-500/20 rounded-2xl shadow-xl animate-fade-in-up">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="font-semibold text-teal-400 text-lg flex items-center"><div className="w-2 h-2 bg-teal-500 rounded-full mr-3" />Project Lifecycle & Roadmap</div>
+                      <button onClick={() => navigator.clipboard.writeText(pmProjectLifecycle)} className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors text-xs">Copy</button>
+                    </div>
+                    <div className="text-gray-300 leading-relaxed whitespace-pre-wrap text-sm">{pmProjectLifecycle}</div>
+                  </div>
+                )}
+
                 {/* Loading indicator for individual tabs */}
                 {pmLoading && (
                   (pmActiveTab === 'prd' && !pmPRD) ||
                   (pmActiveTab === 'stories' && !pmUserStories) ||
-                  (pmActiveTab === 'sprint' && !pmSprintPlan)
-                ) && (pmPRD || pmUserStories || pmSprintPlan) && (
+                  (pmActiveTab === 'sprint' && !pmSprintPlan) ||
+                  (pmActiveTab === 'stakeholder' && !pmStakeholderPlan) ||
+                  (pmActiveTab === 'work' && !pmWorkDistribution) ||
+                  (pmActiveTab === 'lifecycle' && !pmProjectLifecycle)
+                ) && (pmPRD || pmUserStories || pmSprintPlan || pmStakeholderPlan || pmWorkDistribution || pmProjectLifecycle) && (
                     <div className="p-6 bg-white/5 border border-white/10 rounded-2xl flex items-center gap-4">
                       <div className="w-6 h-6 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
-                      <span className="text-gray-400 text-sm">Still generating this section...</span>
+                      <span className="text-gray-400 text-sm">Still generating the {pmActiveTab} section...</span>
                     </div>
                   )}
               </div>
@@ -1196,80 +1368,134 @@ export function MeetingSummarizer() {
                 <div className="text-2xl font-bold mb-3 text-white tracking-tight">No Events Scheduled</div>
                 <div className="mb-8 text-gray-400 text-center max-w-sm leading-relaxed">
                   Your calendar is clear for the next 7 days.<br />
-                  Schedule new events in your connected calendar to see them tracked here automatically.
+                  Connect your Google Calendar or record a meeting to see them tracked here automatically.
                 </div>
-                <a
-                  href="https://calendar.google.com"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center px-6 py-3 bg-red-500/10 border border-red-500/20 text-red-300 font-medium rounded-xl hover:bg-red-500/20 hover:text-red-200 transition-all shadow-lg"
+                <button
+                  onClick={() => connectGoogleCalendar()}
+                  disabled={isFetchingCalendar}
+                  className="inline-flex items-center px-6 py-3 bg-red-600 border border-red-500/50 text-white font-semibold rounded-xl hover:bg-red-500 transition-all shadow-lg active:scale-95 disabled:opacity-50"
                 >
                   <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Gmail_icon_%282020%29.svg/2560px-Gmail_icon_%282020%29.svg.png" alt="Google Calendar" className="w-5 h-5 mr-3" />
-                  Open Google Calendar
-                </a>
+                  {isFetchingCalendar ? "Connecting..." : "Sync Google Calendar"}
+                </button>
               </div>
             ) : (
               Object.entries(groupedMeetings).map(([date, meetings]) => (
                 <div key={date} className="mb-10">
                   <div className="text-sm font-semibold text-gray-400 mb-4 px-2 uppercase tracking-wider">{date}</div>
                   {meetings.map(meeting => (
-                    <div key={meeting.id} className="flex flex-col md:flex-row md:items-center bg-white/5 border border-white/10 rounded-2xl px-6 py-5 mb-4 hover:bg-white/10 transition-colors backdrop-blur-sm shadow-lg group hover-lift animate-fade-in-up" style={{ animationDelay: `${0.05 * meetings.indexOf(meeting)}s` }}>
-                      <div className="w-12 h-12 rounded-full bg-red-500/20 border border-red-500/30 flex items-center justify-center text-red-400 font-bold text-lg mr-5 flex-shrink-0 group-hover:scale-110 transition-transform">
-                        {userEmail ? userEmail[0].toUpperCase() : "N"}
-                      </div>
-                      <div className="flex-1 mt-4 md:mt-0">
-                        <div className="font-semibold text-white text-lg mb-1 truncate">{meeting.summary || 'Summary Pending'}</div>
-                        <div className="text-sm text-gray-400 mb-3 flex items-center">
-                          <span className="bg-white/10 px-2 py-0.5 rounded mr-3 border border-white/5">
-                            {meeting.date ? new Date(meeting.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Recently"}
-                          </span>
-                          <span className="flex items-center"><Clock className="w-3.5 h-3.5 mr-1" /> {Math.round(meeting.duration / 60)} min</span>
-                          <span className="mx-2">&middot;</span>
-                          <span className="truncate">{userEmail}</span>
+                    <div key={meeting.id} className="flex flex-col mb-4">
+                      <div className="flex flex-col md:flex-row md:items-center bg-white/5 border border-white/10 rounded-2xl px-6 py-5 hover:bg-white/10 transition-colors backdrop-blur-sm shadow-lg group hover-lift animate-fade-in-up" style={{ animationDelay: `${0.05 * meetings.indexOf(meeting)}s` }}>
+                        <div className="w-12 h-12 rounded-full bg-red-500/20 border border-red-500/30 flex items-center justify-center text-red-400 font-bold text-lg mr-5 flex-shrink-0 group-hover:scale-110 transition-transform">
+                          {userEmail ? userEmail[0].toUpperCase() : "N"}
                         </div>
-                        {meeting.transcript && (
-                          <div className="text-gray-300 text-sm leading-relaxed p-4 bg-black/20 rounded-xl border border-white/5">
-                            {meeting.transcript.substring(0, 300)}{meeting.transcript.length > 300 ? '...' : ''}
-
-                            {meeting.transcript.includes('Link: ') && (
-                              <div className="mt-4 pt-3 border-t border-white/5 flex items-center justify-between">
-                                <a
-                                  href={meeting.transcript.split('Link: ')[1].split('\n')[0]}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center px-4 py-2 bg-red-600/20 text-red-400 hover:bg-red-600/30 font-semibold rounded-lg border border-red-500/20 transition-all text-sm"
-                                >
-                                  Join Now
-                                </a>
-                                <span className="text-xs text-gray-500 font-medium italic">Verified link detected</span>
-                              </div>
-                            )}
+                        <div className="flex-1 mt-4 md:mt-0">
+                          <div className="font-semibold text-white text-lg mb-1 truncate">{meeting.summary || 'Summary Pending'}</div>
+                          <div className="text-sm text-gray-400 mb-3 flex items-center">
+                            <span className="bg-white/10 px-2 py-0.5 rounded mr-3 border border-white/5">
+                              {meeting.date ? new Date(meeting.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Recently"}
+                            </span>
+                            <span className="flex items-center"><Clock className="w-3.5 h-3.5 mr-1" /> {Math.round(meeting.duration / 60)} min</span>
+                            <span className="mx-2">&middot;</span>
+                            <span className="truncate">{userEmail}</span>
                           </div>
-                        )}
-                      </div>
-                      <div className="mt-4 md:mt-0 md:ml-6 flex items-center justify-between md:justify-end w-full md:w-auto">
-                        <div className="w-32 h-20 bg-black/40 border border-white/5 rounded-xl flex items-center justify-center text-gray-500 opacity-60">
-                          <span className="text-xs font-medium">No Video</span>
+                          {meeting.transcript && (
+                            <div className="text-gray-300 text-sm leading-relaxed p-4 bg-black/20 rounded-xl border border-white/5">
+                              {meeting.transcript.substring(0, 300)}{meeting.transcript.length > 300 ? '...' : ''}
+
+                              {meeting.transcript.includes('Link: ') && (
+                                <div className="mt-4 pt-3 border-t border-white/5 flex items-center justify-between">
+                                  <a
+                                    href={meeting.transcript.split('Link: ')[1].split('\n')[0]}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center px-4 py-2 bg-red-600/20 text-red-400 hover:bg-red-600/30 font-semibold rounded-lg border border-red-500/20 transition-all text-sm"
+                                  >
+                                    Join Now
+                                  </a>
+                                  <span className="text-xs text-gray-500 font-medium italic">Verified link detected</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
-                        <div className="md:hidden">
-                          <button className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-full transition-colors border border-transparent hover:border-white/10">
+                        <div className="mt-4 md:mt-0 md:ml-6 flex items-center justify-between md:justify-end w-full md:w-auto">
+                          <div className="w-32 h-20 bg-black/40 border border-white/5 rounded-xl flex items-center justify-center text-gray-500 opacity-60">
+                            <span className="text-xs font-medium">No Video</span>
+                          </div>
+                          <div className="md:hidden">
+                            <button className="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-full transition-colors border border-transparent hover:border-white/10">
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"></path></svg>
+                            </button>
+                          </div>
+                        </div>
+                        {/* Desktop context menu button */}
+                        <div className="hidden md:flex ml-4 self-start">
+                          <button className="p-2 text-gray-500 hover:text-white hover:bg-white/10 rounded-full transition-colors opacity-0 group-hover:opacity-100">
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"></path></svg>
                           </button>
                         </div>
+
+                        <div className="flex flex-col gap-2 md:flex-row mt-4 md:mt-0 items-center justify-end w-full md:w-auto">
+                          <button
+                            className={`flex items-center px-4 py-2 text-sm font-semibold rounded-xl transition-colors ${editingNotesForId === meeting.id ? 'bg-indigo-600 text-white' : 'bg-white/5 text-gray-300 hover:bg-white/10'}`}
+                            onClick={() => {
+                              if (editingNotesForId === meeting.id) {
+                                setEditingNotesForId(null);
+                              } else {
+                                setEditingNotesForId(meeting.id);
+                                setCurrentNoteText(meeting.notes || '');
+                              }
+                            }}
+                          >
+                            <FileText className="w-4 h-4 mr-2" />
+                            {editingNotesForId === meeting.id ? 'Close' : 'Notes'}
+                          </button>
+                          <button
+                            className="flex items-center text-red-500 hover:text-red-400 p-2 rounded-full hover:bg-red-500/10 transition-colors bg-white/5"
+                            onClick={() => removeMeeting(meeting.id)}
+                            title="Remove meeting"
+                          >
+                            <span className="mr-1">🗑️</span><span className="md:hidden">Remove</span>
+                          </button>
+                        </div>
                       </div>
-                      {/* Desktop context menu button */}
-                      <div className="hidden md:flex ml-4 self-start">
-                        <button className="p-2 text-gray-500 hover:text-white hover:bg-white/10 rounded-full transition-colors opacity-0 group-hover:opacity-100">
-                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"></path></svg>
-                        </button>
-                      </div>
-                      <button
-                        className="flex items-center text-red-500 hover:text-red-400 p-2 rounded-full hover:bg-red-500/10 transition-colors"
-                        onClick={() => removeMeeting(meeting.id)}
-                        title="Remove meeting"
-                      >
-                        <span className="mr-1">🗑️</span><span className="md:hidden">Remove</span>
-                      </button>
+
+                      {/* Notes Section Toggle */}
+                      {editingNotesForId === meeting.id && (
+                        <div className="bg-black/40 border border-white/5 rounded-2xl p-5 mb-4 animate-fade-in-up">
+                          <div className="flex items-center justify-between mb-3 text-sm font-semibold text-gray-400">
+                            <span className="flex items-center text-indigo-400"><FileText className="w-4 h-4 mr-2" /> Meeting Notes</span>
+                          </div>
+                          <textarea
+                            value={currentNoteText}
+                            onChange={(e) => setCurrentNoteText(e.target.value)}
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 shadow-inner min-h-[100px] mb-3"
+                            placeholder="Jot down important takeaways, action items, or quick thoughts from this meeting..."
+                          />
+                          <div className="flex justify-end gap-3">
+                            <button
+                              onClick={() => setEditingNotesForId(null)}
+                              className="px-4 py-2 text-sm font-semibold text-gray-400 hover:text-white bg-white/5 rounded-lg hover:bg-white/10 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={() => saveMeetingNote(meeting.id)}
+                              className="px-5 py-2 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-[0_0_15px_rgba(79,70,229,0.3)] transition-all"
+                            >
+                              Save Notes
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {meeting.notes && editingNotesForId !== meeting.id && (
+                        <div className="w-full bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-4 mb-4 -mt-2 ml-4 md:ml-0 md:pl-24 text-sm text-gray-300">
+                          <strong className="text-indigo-400 block mb-1">Your Notes:</strong>
+                          <div className="whitespace-pre-wrap">{meeting.notes}</div>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1389,99 +1615,101 @@ export function MeetingSummarizer() {
           `}</style>
           </aside>
         </div>
-      </div>
+      </div >
 
       {/* Settings Modal */}
-      {_showSettings && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => _setShowSettings(false)}></div>
-          <div className="relative bg-[#0B0C10] border border-white/10 rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden animate-scale-in">
-            <div className="px-8 py-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
-              <h2 className="text-xl font-bold text-white flex items-center gap-3">
-                <Settings className="w-5 h-5 text-red-400" /> Settings
-              </h2>
-              <button onClick={() => _setShowSettings(false)} className="text-gray-500 hover:text-white text-2xl font-light">&times;</button>
-            </div>
+      {
+        _showSettings && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => _setShowSettings(false)}></div>
+            <div className="relative bg-[#0B0C10] border border-white/10 rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden animate-scale-in">
+              <div className="px-8 py-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
+                <h2 className="text-xl font-bold text-white flex items-center gap-3">
+                  <Settings className="w-5 h-5 text-red-400" /> Settings
+                </h2>
+                <button onClick={() => _setShowSettings(false)} className="text-gray-500 hover:text-white text-2xl font-light">&times;</button>
+              </div>
 
-            <div className="p-8 space-y-8 max-h-[70vh] overflow-y-auto custom-scrollbar">
-              {/* Account Section */}
-              <section>
-                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4">Account Profile</h3>
-                <div className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/5">
-                  <div className="w-12 h-12 rounded-full bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center text-xl font-bold text-white shadow-lg">
-                    {userName?.charAt(0) || 'U'}
-                  </div>
-                  <div>
-                    <div className="font-semibold text-white">{userName}</div>
-                    <div className="text-sm text-gray-400">{userEmail}</div>
-                  </div>
-                </div>
-              </section>
-
-              {/* API Section */}
-              <section>
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest">AI Engine & Fallbacks</h3>
-                  <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20 font-bold">ACTIVE</span>
-                </div>
-                <div className="space-y-4">
-                  <div className="p-4 bg-black/20 rounded-2xl border border-white/5 group hover:border-red-500/30 transition-all">
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-2">Primary: Google Gemini</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="password"
-                        value="••••••••••••••••••••••••"
-                        readOnly
-                        className="flex-1 bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-gray-500 outline-none"
-                      />
-                      <button className="text-xs text-red-400 hover:text-red-300 font-bold px-2 transition-colors">CONFIGURED</button>
+              <div className="p-8 space-y-8 max-h-[70vh] overflow-y-auto custom-scrollbar">
+                {/* Account Section */}
+                <section>
+                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4">Account Profile</h3>
+                  <div className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/5">
+                    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-red-500 to-red-700 flex items-center justify-center text-xl font-bold text-white shadow-lg">
+                      {userName?.charAt(0) || 'U'}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-white">{userName}</div>
+                      <div className="text-sm text-gray-400">{userEmail}</div>
                     </div>
                   </div>
-                  <div className="p-4 bg-black/20 rounded-2xl border border-white/5 group hover:border-purple-500/30 transition-all">
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-2">Fallback: Groq Llama-3</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="password"
-                        value="••••••••••••••••••••••••"
-                        readOnly
-                        className="flex-1 bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-gray-500 outline-none"
-                      />
-                      <button className="text-xs text-purple-400 hover:text-purple-300 font-bold px-2 transition-colors">ENABLED</button>
+                </section>
+
+                {/* API Section */}
+                <section>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest">AI Engine & Fallbacks</h3>
+                    <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20 font-bold">ACTIVE</span>
+                  </div>
+                  <div className="space-y-4">
+                    <div className="p-4 bg-black/20 rounded-2xl border border-white/5 group hover:border-red-500/30 transition-all">
+                      <label className="block text-[10px] font-bold text-gray-500 uppercase mb-2">Primary: Google Gemini</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          value="••••••••••••••••••••••••"
+                          readOnly
+                          className="flex-1 bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-gray-500 outline-none"
+                        />
+                        <button className="text-xs text-red-400 hover:text-red-300 font-bold px-2 transition-colors">CONFIGURED</button>
+                      </div>
+                    </div>
+                    <div className="p-4 bg-black/20 rounded-2xl border border-white/5 group hover:border-purple-500/30 transition-all">
+                      <label className="block text-[10px] font-bold text-gray-500 uppercase mb-2">Fallback: Groq Llama-3</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          value="••••••••••••••••••••••••"
+                          readOnly
+                          className="flex-1 bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-gray-500 outline-none"
+                        />
+                        <button className="text-xs text-purple-400 hover:text-purple-300 font-bold px-2 transition-colors">ENABLED</button>
+                      </div>
                     </div>
                   </div>
-                </div>
-                <p className="mt-3 text-[10px] text-gray-500 leading-relaxed italic">The app automatically switches to Groq if Google Gemini hits rate limits, ensuring maximum availability.</p>
-              </section>
+                  <p className="mt-3 text-[10px] text-gray-500 leading-relaxed italic">The app automatically switches to Groq if Google Gemini hits rate limits, ensuring maximum availability.</p>
+                </section>
 
-              {/* UI Preferences */}
-              <section>
-                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4">Appearance</h3>
-                <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5 group">
-                  <div>
-                    <div className="text-sm font-medium text-gray-300">Dark Mode</div>
-                    <div className="text-[10px] text-gray-500">Enable high-contrast dark theme</div>
+                {/* UI Preferences */}
+                <section>
+                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4">Appearance</h3>
+                  <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5 group">
+                    <div>
+                      <div className="text-sm font-medium text-gray-300">Dark Mode</div>
+                      <div className="text-[10px] text-gray-500">Enable high-contrast dark theme</div>
+                    </div>
+                    <button
+                      onClick={toggleTheme}
+                      className="p-1 px-3 bg-red-500/10 text-red-400 text-[10px] font-bold rounded-lg border border-red-500/20 hover:bg-red-500/20 transition-all"
+                    >
+                      {theme === 'dark' ? 'ENABLED' : 'DISABLED'}
+                    </button>
                   </div>
-                  <button
-                    onClick={toggleTheme}
-                    className="p-1 px-3 bg-red-500/10 text-red-400 text-[10px] font-bold rounded-lg border border-red-500/20 hover:bg-red-500/20 transition-all"
-                  >
-                    {theme === 'dark' ? 'ENABLED' : 'DISABLED'}
-                  </button>
-                </div>
-              </section>
-            </div>
+                </section>
+              </div>
 
-            <div className="p-6 bg-white/[0.02] border-t border-white/5">
-              <button
-                onClick={() => _setShowSettings(false)}
-                className="w-full py-3.5 bg-gradient-to-r from-red-600 to-red-800 text-white font-bold rounded-2xl hover:from-red-500 hover:to-red-700 transition-all shadow-xl shadow-red-500/20 active:scale-[0.98]"
-              >
-                Close Settings
-              </button>
+              <div className="p-6 bg-white/[0.02] border-t border-white/5">
+                <button
+                  onClick={() => _setShowSettings(false)}
+                  className="w-full py-3.5 bg-gradient-to-r from-red-600 to-red-800 text-white font-bold rounded-2xl hover:from-red-500 hover:to-red-700 transition-all shadow-xl shadow-red-500/20 active:scale-[0.98]"
+                >
+                  Close Settings
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )
+      }
+    </div >
   );
 }
