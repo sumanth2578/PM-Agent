@@ -141,7 +141,7 @@ const pmGenerationConfig = {
 async function callGemini(prompt: string): Promise<string> {
   const genAI = getGenAI();
   const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-  const maxRetries = 3;
+  const maxRetries = 2; // Reduced retries to fail faster for fallback
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       const result = await model.generateContent({
@@ -152,13 +152,16 @@ async function callGemini(prompt: string): Promise<string> {
       const response = await result.response;
       return response.text();
     } catch (err: any) {
-      console.warn(`Gemini PM call attempt ${attempt + 1}/${maxRetries} failed:`, err?.message || err);
-      // Don't retry on quota errors, just fail fast so we can fallback
-      if (err?.message?.toLowerCase().includes('quota') || err?.message?.toLowerCase().includes('429')) {
-        throw new Error('Gemini quota exceeded');
+      const errorMsg = err?.message?.toLowerCase() || '';
+      console.warn(`Gemini PM call attempt ${attempt + 1}/${maxRetries} failed:`, errorMsg);
+
+      // Immediately fail for quota/rate limit errors to trigger fallback
+      if (errorMsg.includes('quota') || errorMsg.includes('429') || errorMsg.includes('limit exceeded')) {
+        throw new Error('QUOTA_EXCEEDED');
       }
+
       if (attempt < maxRetries - 1) {
-        const delay = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s
+        const delay = Math.pow(2, attempt + 1) * 1000;
         await new Promise(resolve => setTimeout(resolve, delay));
       } else {
         throw err;
@@ -166,6 +169,38 @@ async function callGemini(prompt: string): Promise<string> {
     }
   }
   throw new Error('Gemini call failed after retries');
+}
+
+export async function transcribeWithGroqWhisper(audioBlob: Blob): Promise<string> {
+  const apiKey = import.meta.env.VITE_GROQ_API_KEY;
+  if (!apiKey) {
+    throw new Error('No Groq API key found for transcription fallback');
+  }
+
+  const formData = new FormData();
+  formData.append('file', audioBlob, 'recording.m4a');
+  formData.append('model', 'whisper-large-v3');
+  formData.append('response_format', 'text');
+
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`Groq Whisper error: ${response.statusText} ${JSON.stringify(errorData)}`);
+    }
+
+    return await response.text();
+  } catch (error) {
+    console.error('Groq Whisper transcription failed:', error);
+    throw error;
+  }
 }
 
 async function callGroqFallback(prompt: string, systemPrompt: string = "You are a helpful AI assistant."): Promise<string> {
@@ -627,94 +662,18 @@ Write your supreme response now:
       return await callGemini(knowledgePrompt);
     } catch (geminiError: any) {
       console.log('Gemini failed for Knowledge Chat, attempting open fallback...', geminiError?.message);
-      try {
-        return await callGroqFallback(knowledgePrompt, "You are 3.0 Labs Intelligence, a specialized PM AI Agent with perfect memory. IMPORTANT: If using Mermaid syntax, always quote node names with spaces. Answer all types of questions expertly.");
-      } catch (fallbackError: any) {
-        console.error('Both AI providers failed for Knowledge Chat:', fallbackError);
-        return "I'm sorry, I'm currently having trouble accessing my memory banks (API limit reached). Please try again in 1-2 minutes.";
+      if (geminiError.message === 'QUOTA_EXCEEDED' || geminiError.message.includes('429')) {
+        try {
+          return await callGroqFallback(knowledgePrompt, "You are 3.0 Labs Intelligence, a specialized PM AI Agent with perfect memory. IMPORTANT: If using Mermaid syntax, always quote node names with spaces. Answer all types of questions expertly.");
+        } catch (fallbackError: any) {
+          console.error('Both AI providers failed for Knowledge Chat:', fallbackError);
+          return "I'm sorry, I'm currently having trouble accessing my memory banks (API limit reached). Please try again in 1-2 minutes.";
+        }
       }
+      throw geminiError;
     }
   } catch (error) {
     console.error('Error querying knowledge:', error);
     return "An error occurred while trying to access the AI memory. Please ensure your API keys are valid.";
-  }
-}
-
-// =========================================================================
-// NEW PM EXTENSION FUNCTIONS
-// =========================================================================
-
-export async function generateStakeholderPlan(summary: string): Promise<string> {
-  const prompt = `
-You are an expert Program Manager and Communications Director. Based on the following meeting summary, create a Stakeholder Communication Plan.
-
-Meeting Context:
-${summary}
-
-Format your response as a professional Markdown document featuring:
-1. **Key Stakeholders Identified**: (Who needs to know about this? Define their persona/role)
-2. **Key Messages**: (What are the core takeaways they care about?)
-3. **Communication Channels**: (How should we reach them? Email, Slack, All-Hands?)
-4. **Frequency & Next Update**: (When is the next touchpoint?)
-
-Make it highly actionable and concise.
-  `;
-  try {
-    return await callGemini(prompt);
-  } catch (err: any) {
-    console.error('Gemini failed for Stakeholder Plan:', err);
-    try { return await callGroqFallback(prompt, "You are an expert Program Manager. Answer in Markdown."); }
-    catch (e) { return "> ⚠️ **AI Quota Exceeded:** Unable to generate Stakeholder Plan currently."; }
-  }
-}
-
-export async function generateWorkDistribution(summary: string): Promise<string> {
-  const prompt = `
-You are an expert Engineering Manager and Agile Coach. Based on the following meeting summary, create a Work Distribution & Assignment Strategy.
-
-Meeting Context:
-${summary}
-
-Format your response as a professional Markdown document featuring:
-1. **Identified Team Members/Roles**: (Who was mentioned or is implicitly needed?)
-2. **Task Assignments**: (A markdown table mapping Task -> Assignee -> Priority -> Estimated Effort)
-3. **Skill Gaps / Blockers**: (Are we missing someone or something to get this done?)
-4. **Immediate Next Steps (24-48 hours)**: (What needs to happen tomorrow?)
-
-Distribute the actionable work logically.
-  `;
-  try {
-    return await callGemini(prompt);
-  } catch (err: any) {
-    console.error('Gemini failed for Work Distribution:', err);
-    try { return await callGroqFallback(prompt, "You are an expert Engineering Manager. Answer in Markdown."); }
-    catch (e) { return "> ⚠️ **AI Quota Exceeded:** Unable to generate Work Distribution currently."; }
-  }
-}
-
-export async function generateProjectLifecycle(summary: string): Promise<string> {
-  const prompt = `
-You are an expert Project Manager (PMP certified). Based on the following meeting summary, define the Project Lifecycle and phased approach for the initiatives discussed.
-
-Meeting Context:
-${summary}
-
-Format your response as a professional Markdown document featuring:
-1. **Current Phase**: (e.g., Discovery, Planning, Execution, Review)
-2. **Proposed Lifecycle Milestones**:
-   - Phase 1: [Name] - [Goal] (Estimated timeline)
-   - Phase 2: [Name] - [Goal] (Estimated timeline)
-   - Phase 3: [Name] - [Goal] (Estimated timeline)
-3. **Critical Path & Dependencies**: (What must happen chronologically?)
-4. **Risk Management Log**: (Identify 2-3 risks and mitigation strategies)
-
-Keep it realistic and structured.
-  `;
-  try {
-    return await callGemini(prompt);
-  } catch (err: any) {
-    console.error('Gemini failed for Project Lifecycle:', err);
-    try { return await callGroqFallback(prompt, "You are an expert Project Manager. Answer in Markdown."); }
-    catch (e) { return "> ⚠️ **AI Quota Exceeded:** Unable to generate Project Lifecycle currently."; }
   }
 }
