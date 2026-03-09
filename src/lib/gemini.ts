@@ -20,13 +20,33 @@ export async function summarizeMeeting(transcript: string) {
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
     const prompt = `
-      Please analyze this meeting transcript and provide:
-      1. A concise summary of key points discussed
-      2. Action items and their owners (if mentioned)
-      3. Important decisions made
-      4. Follow-up tasks
+      Please analyze this meeting transcript and provide a highly structured, professional, and readable summary in Markdown. 
       
-      If the transcript is very short or unclear, please indicate that and provide whatever summary is possible.
+      **CRITICAL: Avoid literal asterisks (**) or unnecessary bolding. Use clean headers and simple bullet points.**
+      
+      Use the following format exactly:
+      
+      # 📝 Meeting Summary
+      [A concise, 2-3 sentence high-level overview of the meeting's purpose and outcome]
+      
+      ## 🌟 Key Highlights
+      - [Highlight 1]
+      - [Highlight 2]
+      - (Include any other major takeaways or interesting points)
+      
+      ## 🎯 Action Items & Owners
+      - [Owner Name]: [Specific Task]
+      - [If no owners mentioned, just list the tasks]
+      
+      ## ✅ Decisions Made
+      - [Decision 1]
+      
+      ## 📅 Next Steps
+      - [Step 1]
+      
+      Note: The transcript may contain speaker labels like [Speaker A], [Speaker B], etc. Please use these labels in your summary when referring to specific people.
+      
+      If the transcript is very short, irrelevant, or unclear, please indicate that but still attempt to extract any value possible.
       
       Transcript:
       ${transcript}
@@ -384,7 +404,9 @@ export async function generatePRD(productIdea: string): Promise<string> {
     }
 
     const prompt = `
-You are an expert Product Manager. Generate a comprehensive Product Requirements Document (PRD) based on the following idea or meeting summary. Use clear markdown formatting.
+You are an expert Product Manager. Generate a comprehensive Product Requirements Document (PRD) based on the following idea or meeting summary. 
+
+**STRICT RULE: Avoid literal double asterisks (**) or excessive bolding. Use clear, structured Markdown headers and clean bullet points.**
 
 **Core Idea/Context:** ${productIdea}
 
@@ -446,7 +468,9 @@ export async function generateUserStories(featureDescription: string): Promise<s
     }
 
     const prompt = `
-You are an expert Product Manager and Agile coach. Generate comprehensive user stories for the following feature. Use clear markdown formatting.
+You are an expert Product Manager and Agile coach. Generate comprehensive user stories for the following feature. 
+
+**STRICT RULE: Avoid literal double asterisks (**) or excessive bolding. Use clean bullet points and clear Markdown structure (### headers).**
 
 **Feature Description:** ${featureDescription}
 
@@ -501,7 +525,9 @@ export async function generateSprintPlan(backlogItems: string, duration: string 
     }
 
     const prompt = `
-You are an expert Agile Scrum Master and Product Manager. Create a structured sprint plan from the following backlog of items/ideas. Use clear markdown formatting.
+You are an expert Agile Scrum Master and Product Manager. Create a structured sprint plan from the following backlog of items/ideas. 
+
+**STRICT RULE: Avoid literal double asterisks (**) or excessive bolding. Use clear Markdown structure and the table format provided below. Use simple text in table cells.**
 
 **Backlog Items/Context:** ${backlogItems}
 
@@ -675,5 +701,44 @@ Write your supreme response now:
   } catch (error) {
     console.error('Error querying knowledge:', error);
     return "An error occurred while trying to access the AI memory. Please ensure your API keys are valid.";
+  }
+}
+
+export async function generateMorningBriefing(events: any[], history: any[]): Promise<string> {
+  const genAI = getGenAI();
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+  const eventsString = events.map(e => `- ${e.summary} at ${new Date(e.date).toLocaleTimeString()}`).join('\n');
+  const historyString = history.slice(0, 5).map(m => `- ${m.summary}`).join('\n');
+
+  const prompt = `
+    You are a high-level Personal Executive Assistant for a Product Manager.
+    Your goal is to provide a brief, professional, and motivating morning briefing for today.
+    
+    Today's Schedule:
+    ${eventsString || "No meetings scheduled for today."}
+    
+    Relevant Past Context (Last 5 meeting summaries):
+    ${historyString || "No previous meeting history found."}
+    
+    Instructions:
+    1. Summarize what is on the agenda for today.
+    2. Try to connect today's meetings with past context (e.g., "You have a follow-up on the X project we discussed yesterday").
+    3. Keep it to about 100-150 words.
+    4. Provide 2-3 specific points of advice or reminders for the day.
+    5. Write in a tone that is premium, intelligent, and slightly visionary.
+  `;
+
+  try {
+    const result = await model.generateContent(prompt);
+    return result.response.text();
+  } catch (err: any) {
+    console.warn('Gemini Morning Briefing failed, attempting Groq fallback...', err?.message);
+    try {
+      return await callGroqFallback(prompt, "You are a professional Executive Assistant PM Agent. Provide a concise, visionary morning briefing.");
+    } catch (fallbackError) {
+      console.error('Both AI providers failed for Morning Briefing:', fallbackError);
+      return "Good morning. I encountered an error preparing your full briefing, but you have " + (events.length || "no") + " meetings scheduled for today. Let's make it a productive day.";
+    }
   }
 }

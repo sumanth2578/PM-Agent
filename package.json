@@ -13,6 +13,7 @@
     "@google-cloud/speech": "^6.3.0",
     "@google/generative-ai": "^0.24.1",
     "@huggingface/inference": "^2.6.4",
+    "@react-oauth/google": "^0.13.4",
     "@supabase/supabase-js": "^2.39.7",
     "html2pdf.js": "^0.14.0",
     "lucide-react": "^0.344.0",

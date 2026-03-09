@@ -189,7 +189,8 @@ export default function KnowledgeChat() {
                     .from('meetings')
                     .select('*')
                     .eq('user_email', user.email)
-                    .order('date', { ascending: false });
+                    .order('date', { ascending: false })
+                    .limit(20);
 
                 if (meetings) setMeetingHistory(meetings);
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { LogOut, Menu, FileText, Users, Calendar, BarChart3, Sparkles, ArrowRight, History, Sun, Moon, Brain, Download, Loader2 } from 'lucide-react';
+import { LogOut, Menu, FileText, Users, Calendar, BarChart3, Sparkles, ArrowRight, History, Sun, Moon, Brain, Download, Loader2, RotateCw } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
 // @ts-ignore
@@ -20,30 +20,44 @@ export function PMDashboard() {
     const [isDownloading, setIsDownloading] = useState(false);
     const { theme, toggleTheme } = useTheme();
     const navigate = useNavigate();
-
-    useEffect(() => {
-        const fetchUserAndStats = async () => {
+    const [loading, setLoading] = useState(false);
+    const fetchUserAndStats = async () => {
+        setLoading(true);
+        try {
             const { data: { user } } = await supabase.auth.getUser();
             if (user) {
                 setUserEmail(user.email || '');
                 setUserName(user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'User');
 
-                // Fetch stats from Supabase instead of localStorage
-                const [{ count: prdCount }, { count: storyCount }, { count: sprintCount }] = await Promise.all([
-                    supabase.from('prds').select('*', { count: 'exact', head: true }).eq('user_id', user.id),
-                    supabase.from('user_stories').select('*', { count: 'exact', head: true }).eq('user_id', user.id),
-                    supabase.from('sprint_plans').select('*', { count: 'exact', head: true }).eq('user_id', user.id)
-                ]);
+                // Fetch counts individually to handle potential issues with head: true or specific table errors
+                const prdRes = await supabase.from('prds').select('id', { count: 'exact' }).eq('user_id', user.id);
+                const storyRes = await supabase.from('user_stories').select('id', { count: 'exact' }).eq('user_id', user.id);
+                const sprintRes = await supabase.from('sprint_plans').select('id', { count: 'exact' }).eq('user_id', user.id);
 
                 setStats({
-                    prdsCreated: prdCount || 0,
-                    storiesGenerated: storyCount || 0,
-                    sprintsPlanned: sprintCount || 0,
+                    prdsCreated: prdRes.count || 0,
+                    storiesGenerated: storyRes.count || 0,
+                    sprintsPlanned: sprintRes.count || 0,
                 });
             }
-        };
+        } catch (err) {
+            console.error('Error fetching dashboard stats:', err);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
         fetchUserAndStats();
     }, []);
+
+    const [isSyncing, setIsSyncing] = useState(false);
+
+    const handleSync = async () => {
+        setIsSyncing(true);
+        await fetchUserAndStats();
+        setTimeout(() => setIsSyncing(false), 1000);
+    };
 
     const handleDownloadReport = async () => {
         setIsDownloading(true);
@@ -65,6 +79,17 @@ export function PMDashboard() {
                     <br/>
             `;
 
+            const mdToHtml = (md: string) => {
+                return md
+                    .replace(/^# (.*$)/gm, '<h1 style="color: #ef4444; font-size: 24px; margin-top: 20px;">$1</h1>')
+                    .replace(/^## (.*$)/gm, '<h2 style="color: #333; font-size: 18px; margin-top: 15px; border-left: 20px solid #ef4444; padding-left: 10px;">$1</h2>')
+                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                    .replace(/^\- (.*$)/gm, '<li style="margin-left: 20px;">$1</li>')
+                    .replace(/\n\n/g, '<br/><br/>')
+                    .replace(/\n/g, '<br/>');
+            };
+
             innerHTML += `<h2 style="color: #ef4444; margin-top: 30px; border-bottom: 1px solid #ddd;">📄 Product Requirements Documents</h2>`;
             if (prds.data?.length) {
                 prds.data.forEach((prd: any) => {
@@ -72,7 +97,7 @@ export function PMDashboard() {
                         <div style="margin-bottom: 30px;">
                             <h3 style="color: #1a1c24;">${prd.title}</h3>
                             <p style="color: #999; font-size: 10px;">Created: ${new Date(prd.created_at).toLocaleDateString()}</p>
-                            <div style="white-space: pre-wrap; margin-top: 10px; font-size: 13px;">${prd.content}</div>
+                            <div style="white-space: pre-wrap; margin-top: 10px; font-size: 13px;">${mdToHtml(prd.content)}</div>
                         </div>
                         <hr style="border: 0; border-top: 1px solid #eee;"/>
                     `;
@@ -84,30 +109,28 @@ export function PMDashboard() {
                 stories.data.forEach((story: any) => {
                     innerHTML += `
                         <div style="margin-bottom: 30px;">
-                            <h3 style="color: #1a1c24;">Feature: ${story.feature}</h3>
+                            <h3 style="color: #1a1c24;">${story.feature}</h3>
                             <p style="color: #999; font-size: 10px;">Created: ${new Date(story.created_at).toLocaleDateString()}</p>
-                            <div style="white-space: pre-wrap; margin-top: 10px; font-size: 13px;">${story.content}</div>
+                            <div style="white-space: pre-wrap; margin-top: 10px; font-size: 13px;">${mdToHtml(story.content)}</div>
                         </div>
                         <hr style="border: 0; border-top: 1px solid #eee;"/>
                     `;
                 });
-            } else { innerHTML += `<p>No User Stories found.</p>`; }
+            } else { innerHTML += `<p>No user stories found.</p>`; }
 
             innerHTML += `<h2 style="color: #ef4444; margin-top: 40px; border-bottom: 1px solid #ddd;">📅 Sprint Plans</h2>`;
             if (sprints.data?.length) {
                 sprints.data.forEach((sprint: any) => {
                     innerHTML += `
                         <div style="margin-bottom: 30px;">
-                            <h3 style="color: #1a1c24;">Duration: ${sprint.duration}</h3>
-                            <p style="color: #999; font-size: 10px;">Created: ${new Date(sprint.created_at).toLocaleDateString()}</p>
-                            <p><strong>Backlog:</strong></p>
-                            <div style="white-space: pre-wrap; font-size: 12px; font-style: italic;">${sprint.backlog}</div>
-                            <div style="white-space: pre-wrap; margin-top: 10px; font-size: 13px;">${sprint.content}</div>
+                            <h3 style="color: #1a1c24;">${sprint.backlog}</h3>
+                            <p style="color: #999; font-size: 10px;">Duration: ${sprint.duration} | Created: ${new Date(sprint.created_at).toLocaleDateString()}</p>
+                            <div style="white-space: pre-wrap; margin-top: 10px; font-size: 13px;">${mdToHtml(sprint.content)}</div>
                         </div>
                         <hr style="border: 0; border-top: 1px solid #eee;"/>
                     `;
                 });
-            } else { innerHTML += `<p>No Sprint Plans found.</p>`; }
+            } else { innerHTML += `<p>No sprint plans found.</p>`; }
 
             innerHTML += `</div>`;
             element.innerHTML = innerHTML;
@@ -303,7 +326,17 @@ export function PMDashboard() {
                             <Sparkles className="w-7 h-7 text-red-500 animate-pulse" />
                             Product Manager AI Agent
                         </h1>
-                        <p className="text-gray-400 text-sm mt-1">AI-powered tools to supercharge your product management workflow</p>
+                        <p className="text-gray-400 text-sm mt-1 flex items-center gap-2">
+                            AI-powered tools to supercharge your product management workflow
+                            <button
+                                onClick={handleSync}
+                                disabled={isSyncing}
+                                className={`p-2 rounded-xl border transition-all ${isSyncing ? 'bg-red-500/20 border-red-500/50 text-red-500 cursor-not-allowed' : 'bg-white/5 border-white/10 text-gray-400 hover:text-red-400 hover:bg-red-500/10'}`}
+                                title="Refresh Stats"
+                            >
+                                <RotateCw className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} />
+                            </button>
+                        </p>
                     </div>
                     <button
                         onClick={handleDownloadReport}
@@ -332,7 +365,11 @@ export function PMDashboard() {
                                     {stat.icon}
                                 </div>
                                 <div>
-                                    <div className="text-2xl font-bold text-white">{stat.value}</div>
+                                    {loading ? (
+                                        <div className="h-8 w-12 bg-white/10 animate-pulse rounded-lg mb-1"></div>
+                                    ) : (
+                                        <div className="text-2xl font-bold text-white">{stat.value}</div>
+                                    )}
                                     <div className="text-sm text-gray-400">{stat.label}</div>
                                 </div>
                             </div>
