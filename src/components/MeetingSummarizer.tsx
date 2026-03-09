@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Mic, MicOff, Monitor, Upload, CheckCircle, Sun, Moon, LogOut, Settings, Menu, History, Clock, Home, Brain, Sparkles, FileText, Users, Calendar as CalendarIcon, Video, Phone, Link2, ExternalLink } from 'lucide-react';
 import { supabase } from '../lib/supabase';
@@ -36,6 +36,27 @@ interface MeetingSummary {
 }
 
 type SpeechService = 'gemini';
+
+const GOOGLE_CLIENT_ID_AVAILABLE = !!import.meta.env.VITE_GOOGLE_CLIENT_ID;
+
+interface CalendarSyncButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  onSyncSuccess: (tokenResponse: { access_token: string }) => void;
+  onSyncError: (error: any) => void;
+  isSyncing: boolean;
+}
+
+function CalendarSyncButton({ onSyncSuccess, onSyncError, isSyncing, children, ...rest }: CalendarSyncButtonProps) {
+  const login = useGoogleLogin({
+    onSuccess: onSyncSuccess,
+    scope: 'https://www.googleapis.com/auth/calendar.events.readonly',
+    onError: onSyncError,
+  });
+  return (
+    <button {...rest} onClick={() => !isSyncing && login()}>
+      {children}
+    </button>
+  );
+}
 
 export function MeetingSummarizer() {
   const { theme, toggleTheme } = useTheme();
@@ -219,61 +240,51 @@ export function MeetingSummarizer() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  const connectGoogleCalendar = useGoogleLogin({
-    onSuccess: async (tokenResponse) => {
-      setIsSyncingCalendar(true);
-      try {
-        const response = await fetch(
-          `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${new Date().toISOString()}&maxResults=20&orderBy=startTime&singleEvents=true`,
-          {
-            headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
-          }
-        );
-
-        if (!response.ok) throw new Error('Failed to fetch calendar events');
-
-        const data = await response.json();
-
-        const events: MeetingSummary[] = data.items.map((item: any) => {
-          // Detect platform based on link
-          let platform = 'Meeting';
-          const link = item.htmlLink || '';
-          if (link.includes('meet.google.com') || item.hangoutLink) platform = 'Google Meet';
-          else if (link.includes('zoom.us') || (item.location && item.location.includes('zoom.us'))) platform = 'Zoom';
-          else if (link.includes('teams.microsoft.com') || (item.location && item.location.includes('teams.microsoft'))) platform = 'MS Teams';
-
-          return {
-            id: `cal-${item.id}`,
-            date: item.start.dateTime || item.start.date,
-            duration: item.end.dateTime && item.start.dateTime
-              ? Math.floor((new Date(item.end.dateTime).getTime() - new Date(item.start.dateTime).getTime()) / 1000)
-              : 3600, // Default 1 hour if all-day
-            summary: item.summary || 'Untitled Event',
-            transcript: item.description || '',
-            type: 'calendar',
-            link: item.hangoutLink || item.htmlLink || item.location,
-            platform
-          };
-        });
-
-        setCalendarMeetings(events);
-        setIsCalendarConnected(true);
-        localStorage.setItem('isCalendarConnected', 'true');
-        localStorage.setItem('calendarEvents_v2', JSON.stringify(events));
-      } catch (err) {
-        console.error('Error connecting calendar:', err);
-        setError('Failed to sync Google Calendar. Please try again.');
-      } finally {
-        setIsSyncingCalendar(false);
-      }
-    },
-    scope: 'https://www.googleapis.com/auth/calendar.events.readonly',
-    onError: error => {
-      console.error('Login Failed:', error);
+  const handleCalendarSyncSuccess = async (tokenResponse: { access_token: string }) => {
+    setIsSyncingCalendar(true);
+    try {
+      const response = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${new Date().toISOString()}&maxResults=20&orderBy=startTime&singleEvents=true`,
+        { headers: { Authorization: `Bearer ${tokenResponse.access_token}` } }
+      );
+      if (!response.ok) throw new Error('Failed to fetch calendar events');
+      const data = await response.json();
+      const events: MeetingSummary[] = data.items.map((item: any) => {
+        let platform = 'Meeting';
+        const link = item.htmlLink || '';
+        if (link.includes('meet.google.com') || item.hangoutLink) platform = 'Google Meet';
+        else if (link.includes('zoom.us') || (item.location && item.location.includes('zoom.us'))) platform = 'Zoom';
+        else if (link.includes('teams.microsoft.com') || (item.location && item.location.includes('teams.microsoft'))) platform = 'MS Teams';
+        return {
+          id: `cal-${item.id}`,
+          date: item.start.dateTime || item.start.date,
+          duration: item.end.dateTime && item.start.dateTime
+            ? Math.floor((new Date(item.end.dateTime).getTime() - new Date(item.start.dateTime).getTime()) / 1000)
+            : 3600,
+          summary: item.summary || 'Untitled Event',
+          transcript: item.description || '',
+          type: 'calendar',
+          link: item.hangoutLink || item.htmlLink || item.location,
+          platform
+        };
+      });
+      setCalendarMeetings(events);
+      setIsCalendarConnected(true);
+      localStorage.setItem('isCalendarConnected', 'true');
+      localStorage.setItem('calendarEvents_v2', JSON.stringify(events));
+    } catch (err) {
+      console.error('Error connecting calendar:', err);
+      setError('Failed to sync Google Calendar. Please try again.');
+    } finally {
       setIsSyncingCalendar(false);
-      setError('Google Calendar authentication failed.');
     }
-  });
+  };
+
+  const handleCalendarSyncError = (error: any) => {
+    console.error('Login Failed:', error);
+    setIsSyncingCalendar(false);
+    setError('Google Calendar authentication failed.');
+  };
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -1241,23 +1252,37 @@ export function MeetingSummarizer() {
                 Upload
               </button>
 
-              <button
-                onClick={() => !isSyncingCalendar && connectGoogleCalendar()}
-                disabled={isSyncingCalendar}
-                className={`px-4 py-2.5 font-bold rounded-xl transition-all flex items-center shadow-lg active:scale-95 group border ${isCalendarConnected
-                  ? 'bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20'
-                  : 'bg-white/5 text-white border-white/10 hover:bg-white/10 hover:border-red-500/50'
-                  }`}
-                title={isCalendarConnected ? "Refresh Google Calendar" : "Sync Google Calendar"}
-              >
-                {isSyncingCalendar ? (
-                  <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin mr-2" />
-                ) : (
-                  <CalendarIcon className={`w-4 h-4 mr-2 transition-transform group-hover:rotate-12 ${isCalendarConnected ? 'text-blue-400' : 'text-red-500'}`} />
-                )}
-                <span className="hidden sm:inline">{isSyncingCalendar ? 'Syncing...' : (isCalendarConnected ? 'Refresh' : 'Sync Cal')}</span>
-                <span className="sm:hidden">{isSyncingCalendar ? '...' : (isCalendarConnected ? 'Ref' : 'Cal')}</span>
-              </button>
+              {GOOGLE_CLIENT_ID_AVAILABLE ? (
+                <CalendarSyncButton
+                  onSyncSuccess={handleCalendarSyncSuccess}
+                  onSyncError={handleCalendarSyncError}
+                  isSyncing={isSyncingCalendar}
+                  disabled={isSyncingCalendar}
+                  className={`px-4 py-2.5 font-bold rounded-xl transition-all flex items-center shadow-lg active:scale-95 group border ${isCalendarConnected
+                    ? 'bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20'
+                    : 'bg-white/5 text-white border-white/10 hover:bg-white/10 hover:border-red-500/50'
+                    }`}
+                  title={isCalendarConnected ? "Refresh Google Calendar" : "Sync Google Calendar"}
+                >
+                  {isSyncingCalendar ? (
+                    <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin mr-2" />
+                  ) : (
+                    <CalendarIcon className={`w-4 h-4 mr-2 transition-transform group-hover:rotate-12 ${isCalendarConnected ? 'text-blue-400' : 'text-red-500'}`} />
+                  )}
+                  <span className="hidden sm:inline">{isSyncingCalendar ? 'Syncing...' : (isCalendarConnected ? 'Refresh' : 'Sync Cal')}</span>
+                  <span className="sm:hidden">{isSyncingCalendar ? '...' : (isCalendarConnected ? 'Ref' : 'Cal')}</span>
+                </CalendarSyncButton>
+              ) : (
+                <button
+                  disabled
+                  className="px-4 py-2.5 font-bold rounded-xl flex items-center shadow-lg border bg-white/5 text-gray-600 border-white/5 cursor-not-allowed"
+                  title="Google Client ID not configured"
+                >
+                  <CalendarIcon className="w-4 h-4 mr-2 text-gray-600" />
+                  <span className="hidden sm:inline">Sync Cal</span>
+                  <span className="sm:hidden">Cal</span>
+                </button>
+              )}
 
             </div>
           </div>
@@ -1611,18 +1636,26 @@ export function MeetingSummarizer() {
                   )}
                 </div>
                 {!isCalendarConnected && !selectedDate && (
-                  <button
-                    onClick={() => !isSyncingCalendar && connectGoogleCalendar()}
-                    disabled={isSyncingCalendar}
-                    className="inline-flex items-center px-8 py-3.5 bg-red-600 text-white font-bold rounded-2xl hover:bg-red-500 shadow-[0_0_20px_rgba(239,68,68,0.3)] transition-all active:scale-95 disabled:opacity-50"
-                  >
-                    {isSyncingCalendar ? (
-                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-3" />
-                    ) : (
-                      <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Gmail_icon_%282020%29.svg/2560px-Gmail_icon_%282020%29.svg.png" alt="Google Calendar" className="w-5 h-5 mr-3" />
-                    )}
-                    {isSyncingCalendar ? 'Connecting...' : 'Connect Google Calendar'}
-                  </button>
+                  GOOGLE_CLIENT_ID_AVAILABLE ? (
+                    <CalendarSyncButton
+                      onSyncSuccess={handleCalendarSyncSuccess}
+                      onSyncError={handleCalendarSyncError}
+                      isSyncing={isSyncingCalendar}
+                      disabled={isSyncingCalendar}
+                      className="inline-flex items-center px-8 py-3.5 bg-red-600 text-white font-bold rounded-2xl hover:bg-red-500 shadow-[0_0_20px_rgba(239,68,68,0.3)] transition-all active:scale-95 disabled:opacity-50"
+                    >
+                      {isSyncingCalendar ? (
+                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-3" />
+                      ) : (
+                        <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Gmail_icon_%282020%29.svg/2560px-Gmail_icon_%282020%29.svg.png" alt="Google Calendar" className="w-5 h-5 mr-3" />
+                      )}
+                      {isSyncingCalendar ? 'Connecting...' : 'Connect Google Calendar'}
+                    </CalendarSyncButton>
+                  ) : (
+                    <button disabled className="inline-flex items-center px-8 py-3.5 bg-gray-700 text-gray-400 font-bold rounded-2xl cursor-not-allowed">
+                      Google Calendar Not Configured
+                    </button>
+                  )
                 )}
               </div>
             ) : (
