@@ -81,6 +81,12 @@ export function MeetingSummarizer() {
   const [pmActiveTab, setPmActiveTab] = useState<'prd' | 'stories' | 'sprint'>('prd');
   const [highlights, setHighlights] = useState<Highlight[]>([]);
 
+  const formatDuration = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
   const markMoment = () => {
     if (!isRecording || isPaused) return;
     const newHighlight = {
