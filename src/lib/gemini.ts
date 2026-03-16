@@ -144,7 +144,12 @@ export async function summarizeMeeting(transcript: string) {
 
 // ==================== PM AGENT FUNCTIONS ====================
 
-const pmSafetySettings = [
+interface SafetySetting {
+  category: string;
+  threshold: string;
+}
+
+const pmSafetySettings: SafetySetting[] = [
   { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
   { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
   { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
@@ -167,12 +172,13 @@ async function callGemini(prompt: string): Promise<string> {
       const result = await model.generateContent({
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: pmGenerationConfig,
-        safetySettings: pmSafetySettings as any,
+        safetySettings: pmSafetySettings as any, // Cast necessary as library types are sometimes incompatible with literal assertions
       });
       const response = await result.response;
       return response.text();
-    } catch (err: any) {
-      const errorMsg = err?.message?.toLowerCase() || '';
+    } catch (err) {
+      const error = err as Error;
+      const errorMsg = error?.message?.toLowerCase() || '';
       console.warn(`Gemini PM call attempt ${attempt + 1}/${maxRetries} failed:`, errorMsg);
 
       // Immediately fail for quota/rate limit errors to trigger fallback
@@ -446,8 +452,9 @@ Be thorough, specific, and actionable. Write as if this PRD will be handed direc
 
     try {
       return await callGemini(prompt);
-    } catch (geminiError: any) {
-      console.log('Gemini failed for PRD, attempting open fallback...', geminiError?.message);
+    } catch (geminiError) {
+      const error = geminiError instanceof Error ? geminiError : new Error(String(geminiError));
+      console.log('Gemini failed for PRD, attempting open fallback...', error.message);
       try {
         return await callGroqFallback(prompt, "You are an expert Product Manager. Please complete the following request clearly and concisely in Markdown format.");
       } catch (fallbackError) {
@@ -503,8 +510,9 @@ Order stories by priority (P0 first). Be specific and testable in acceptance cri
 
     try {
       return await callGemini(prompt);
-    } catch (geminiError: any) {
-      console.log('Gemini failed for User Stories, attempting open fallback...', geminiError?.message);
+    } catch (geminiError) {
+      const error = geminiError instanceof Error ? geminiError : new Error(String(geminiError));
+      console.log('Gemini failed for User Stories, attempting open fallback...', error.message);
       try {
         return await callGroqFallback(prompt, "You are an expert Product Manager and Agile coach. Please complete the following request clearly and concisely in Markdown format.");
       } catch (fallbackError) {
@@ -557,8 +565,9 @@ Be realistic with story point estimates. Total points should be achievable withi
 
     try {
       return await callGemini(prompt);
-    } catch (geminiError: any) {
-      console.log('Gemini failed for Sprint Plan, attempting open fallback...', geminiError?.message);
+    } catch (geminiError) {
+      const error = geminiError instanceof Error ? geminiError : new Error(String(geminiError));
+      console.log('Gemini failed for Sprint Plan, attempting open fallback...', error.message);
       try {
         return await callGroqFallback(prompt, "You are an expert Agile Scrum Master and Product Manager. Please complete the following request clearly and concisely in Markdown format.");
       } catch (fallbackError) {
@@ -597,8 +606,9 @@ Be data-driven and justify each score. Consider user impact, business value, and
 
     try {
       return await callGemini(prompt);
-    } catch (geminiError: any) {
-      console.log('Gemini failed for Feature Priority, attempting open fallback...', geminiError?.message);
+    } catch (geminiError) {
+      const error = geminiError instanceof Error ? geminiError : new Error(String(geminiError));
+      console.log('Gemini failed for Feature Priority, attempting open fallback...', error.message);
       try {
         return await callGroqFallback(prompt, "You are an expert Product Manager. Please complete the following request clearly and concisely in Markdown format.");
       } catch (fallbackError) {
@@ -611,7 +621,13 @@ Be data-driven and justify each score. Consider user impact, business value, and
     throw new Error(error instanceof Error ? error.message : 'Failed to analyze feature priority. Please try again.');
   }
 }
-export async function queryKnowledge(query: string, history: any[]): Promise<string> {
+interface HistoryItem {
+  date?: string;
+  summary?: string;
+  content?: string;
+}
+
+export async function queryKnowledge(query: string, history: HistoryItem[]): Promise<string> {
   try {
     if (!query || query.trim() === '') {
       return "Please provide a question to ask the AI Memory.";
@@ -686,12 +702,13 @@ Write your supreme response now:
 
     try {
       return await callGemini(knowledgePrompt);
-    } catch (geminiError: any) {
-      console.log('Gemini failed for Knowledge Chat, attempting open fallback...', geminiError?.message);
-      if (geminiError.message === 'QUOTA_EXCEEDED' || geminiError.message.includes('429')) {
+    } catch (geminiError) {
+      const error = geminiError instanceof Error ? geminiError : new Error(String(geminiError));
+      console.log('Gemini failed for Knowledge Chat, attempting open fallback...', error.message);
+      if (error.message === 'QUOTA_EXCEEDED' || error.message.includes('429')) {
         try {
           return await callGroqFallback(knowledgePrompt, "You are 3.0 Labs Intelligence, a specialized PM AI Agent with perfect memory. IMPORTANT: If using Mermaid syntax, always quote node names with spaces. Answer all types of questions expertly.");
-        } catch (fallbackError: any) {
+        } catch (fallbackError) {
           console.error('Both AI providers failed for Knowledge Chat:', fallbackError);
           return "I'm sorry, I'm currently having trouble accessing my memory banks (API limit reached). Please try again in 1-2 minutes.";
         }
@@ -704,7 +721,12 @@ Write your supreme response now:
   }
 }
 
-export async function generateMorningBriefing(events: any[], history: any[]): Promise<string> {
+interface BriefingEvent {
+  summary: string;
+  date: string;
+}
+
+export async function generateMorningBriefing(events: BriefingEvent[], history: HistoryItem[]): Promise<string> {
   const genAI = getGenAI();
   const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
@@ -732,8 +754,9 @@ export async function generateMorningBriefing(events: any[], history: any[]): Pr
   try {
     const result = await model.generateContent(prompt);
     return result.response.text();
-  } catch (err: any) {
-    console.warn('Gemini Morning Briefing failed, attempting Groq fallback...', err?.message);
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    console.warn('Gemini Morning Briefing failed, attempting Groq fallback...', error.message);
     try {
       return await callGroqFallback(prompt, "You are a professional Executive Assistant PM Agent. Provide a concise, visionary morning briefing.");
     } catch (fallbackError) {

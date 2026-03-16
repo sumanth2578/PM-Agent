@@ -15,7 +15,20 @@ import remarkGfm from 'remark-gfm';
 import html2pdf from 'html2pdf.js';
 
 declare global {
-  interface Window { gapi: any }
+  interface Window {
+    gapi: {
+      load: (apiName: string, callback: () => void) => void;
+      client: {
+        init: (config: {
+          apiKey: string;
+          clientId: string;
+          discoveryDocs: string[];
+          scope: string;
+        }) => Promise<void>;
+      };
+    };
+    webkitAudioContext: typeof AudioContext;
+  }
 }
 
 interface Highlight {
@@ -39,9 +52,13 @@ type SpeechService = 'gemini';
 
 const GOOGLE_CLIENT_ID_AVAILABLE = !!import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
+interface GoogleTokenResponse {
+  access_token: string;
+}
+
 interface CalendarSyncButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  onSyncSuccess: (tokenResponse: { access_token: string }) => void;
-  onSyncError: (error: any) => void;
+  onSyncSuccess: (tokenResponse: GoogleTokenResponse) => void;
+  onSyncError: (error: unknown) => void;
   isSyncing: boolean;
 }
 
@@ -240,7 +257,24 @@ export function MeetingSummarizer() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  const handleCalendarSyncSuccess = async (tokenResponse: { access_token: string }) => {
+interface GoogleCalendarEvent {
+  id: string;
+  htmlLink?: string;
+  hangoutLink?: string;
+  location?: string;
+  summary?: string;
+  description?: string;
+  start: {
+    dateTime?: string;
+    date?: string;
+  };
+  end: {
+    dateTime?: string;
+    date?: string;
+  };
+}
+
+  const handleCalendarSyncSuccess = async (tokenResponse: GoogleTokenResponse) => {
     setIsSyncingCalendar(true);
     try {
       const response = await fetch(
@@ -249,7 +283,7 @@ export function MeetingSummarizer() {
       );
       if (!response.ok) throw new Error('Failed to fetch calendar events');
       const data = await response.json();
-      const events: MeetingSummary[] = data.items.map((item: any) => {
+      const events: MeetingSummary[] = data.items.map((item: GoogleCalendarEvent) => {
         let platform = 'Meeting';
         const link = item.htmlLink || '';
         if (link.includes('meet.google.com') || item.hangoutLink) platform = 'Google Meet';
@@ -257,7 +291,7 @@ export function MeetingSummarizer() {
         else if (link.includes('teams.microsoft.com') || (item.location && item.location.includes('teams.microsoft'))) platform = 'MS Teams';
         return {
           id: `cal-${item.id}`,
-          date: item.start.dateTime || item.start.date,
+          date: item.start.dateTime || item.start.date || new Date().toISOString(),
           duration: item.end.dateTime && item.start.dateTime
             ? Math.floor((new Date(item.end.dateTime).getTime() - new Date(item.start.dateTime).getTime()) / 1000)
             : 3600,
@@ -280,7 +314,7 @@ export function MeetingSummarizer() {
     }
   };
 
-  const handleCalendarSyncError = (error: any) => {
+  const handleCalendarSyncError = (error: unknown) => {
     console.error('Login Failed:', error);
     setIsSyncingCalendar(false);
     setError('Google Calendar authentication failed.');
@@ -436,7 +470,7 @@ export function MeetingSummarizer() {
         };
       }
       // Compress audio bitrate so a 2-hour meeting perfectly fits within Gemini's 20MB limit (~14MB)
-      let options: any = { audioBitsPerSecond: 16000 };
+      let options: MediaRecorderOptions = { audioBitsPerSecond: 16000 };
       if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
         options = { ...options, mimeType: 'audio/webm;codecs=opus' };
       } else if (MediaRecorder.isTypeSupported('audio/webm')) {
@@ -556,7 +590,8 @@ export function MeetingSummarizer() {
         const summary = summaryMatch ? summaryMatch[1].trim() : "Summary could not be generated.";
 
         return { transcription, summary };
-      } catch (geminiError: any) {
+      } catch (err) {
+        const geminiError = err as Error;
         console.warn('Gemini transcription/summarization failed, switching to Groq fallback...', geminiError?.message);
 
         // Fallback Step 1: Transcribe with Groq Whisper
@@ -1062,8 +1097,8 @@ export function MeetingSummarizer() {
 
       {/* Sidebar */}
       <aside className={`
-        fixed inset-y-0 left-0 z-40 w-64 bg-[#0B0C10] border-r border-white/10 transform transition-transform duration-300 ease-in-out flex flex-col pt-6 pb-4
-        ${sidebarOpen ? 'translate-x-0 outline-none' : '-translate-x-full md:translate-x-0'}
+        fixed inset-y-0 left-0 z-40 w-72 bg-[#0B0C10] border-r border-white/10 transform transition-transform duration-300 ease-in-out flex flex-col pt-6 pb-4
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 md:static md:h-full lg:w-80
       `}>
         <div className="flex items-center justify-between px-6 mb-8 relative">
           <div className="font-extrabold text-2xl bg-clip-text text-transparent bg-gradient-to-r from-red-500 via-red-300 to-red-500 tracking-tighter animate-gradient">3.0Labs</div>
@@ -1169,7 +1204,7 @@ export function MeetingSummarizer() {
       >
         <Menu className="w-6 h-6 text-white" />
       </button>
-      <div className="flex-1 flex flex-col md:ml-64 h-screen overflow-hidden relative">
+      <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
         {/* Ambient orbs - RED THEME */}
         <div className="absolute top-0 right-0 -mr-20 -mt-20 w-96 h-96 bg-red-600/20 rounded-full blur-[120px] animate-float pointer-events-none"></div>
         <div className="absolute bottom-0 left-0 -ml-20 -mb-20 w-80 h-80 bg-red-900/20 rounded-full blur-[100px] animate-float-slow pointer-events-none"></div>
@@ -1184,117 +1219,100 @@ export function MeetingSummarizer() {
           />
         )}
 
-        <header className="flex flex-col lg:flex-row items-start lg:items-center justify-between px-6 md:px-10 py-6 bg-[#0B0C10]/80 backdrop-blur-xl border-b border-white/5 z-30 flex-shrink-0 gap-4">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 w-full">
-            <div className="flex items-center justify-between w-full lg:w-auto gap-4 shrink-0">
-              <div className="flex items-center gap-4">
-                <button
-                  className="md:hidden text-gray-400 hover:text-white p-2 hover:bg-white/5 rounded-lg active:scale-95 transition-all"
-                  onClick={() => setSidebarOpen(true)}
-                  aria-label="Open Menu"
-                >
-                  <Menu className="w-6 h-6" />
-                </button>
-                <h1 className="text-xl md:text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-                  <span className="w-2 h-8 bg-red-600 rounded-full animate-pulse shadow-[0_0_10px_rgba(220,38,38,0.5)] hidden sm:block"></span>
-                  Meetings
-                </h1>
-              </div>
-              <div className="flex lg:hidden">
-                <button
-                  onClick={() => _setShowSettings(true)}
-                  className="p-2 bg-white/5 hover:bg-red-500/10 text-gray-400 hover:text-red-400 rounded-xl border border-white/10 transition-all"
-                >
-                  <Settings className="w-5 h-5" />
-                </button>
-              </div>
+        <header className="flex flex-col lg:flex-row items-center justify-between px-4 md:px-8 py-4 bg-[#0B0C10]/80 backdrop-blur-xl border-b border-white/5 z-30 flex-shrink-0 gap-4">
+          <div className="flex items-center justify-between w-full lg:w-auto gap-4">
+            <div className="flex items-center gap-4">
+              <button
+                className="md:hidden text-gray-400 hover:text-white p-2 hover:bg-white/5 rounded-lg transition-all"
+                onClick={() => setSidebarOpen(true)}
+                aria-label="Open Menu"
+              >
+                <Menu className="w-6 h-6" />
+              </button>
+              <h1 className="text-lg md:text-xl font-bold text-white tracking-tight flex items-center gap-2">
+                <span className="w-1.5 h-6 bg-red-600 rounded-full animate-pulse shadow-[0_0_10px_rgba(220,38,38,0.5)]"></span>
+                Meetings
+              </h1>
             </div>
-
-            {/* Recording Controls - RESTORED */}
-            <div className="flex flex-wrap gap-2 sm:gap-3 z-40">
+            
+            <div className="flex lg:hidden items-center gap-2">
               <button
-                className={`px-4 py-2.5 font-bold rounded-xl transition-all flex items-center shadow-lg group active:scale-95 ${isRecording && recordingMode === 'microphone'
-                  ? 'bg-red-500 text-white animate-pulse border border-red-400'
-                  : 'bg-white/5 text-white hover:bg-white/10 border border-white/10 hover:border-red-500/50'
-                  }`}
-                onClick={() => isRecording ? stopRecording() : startRecording('microphone')}
-                disabled={!audioSupported || !apiStatus.gemini || !apiStatus.huggingface || (isRecording && recordingMode !== 'microphone')}
+                onClick={() => _setShowSettings(true)}
+                className="p-2 bg-white/5 hover:bg-red-500/10 text-gray-400 hover:text-red-400 rounded-xl border border-white/10 transition-all"
               >
-                <Mic className={`w-4 h-4 mr-2 transition-transform group-hover:scale-110 ${isRecording ? 'text-white' : 'text-red-500'}`} />
-                {isRecording && recordingMode === 'microphone' ? "Stop Recording" : "Record Mic"}
+                <Settings className="w-5 h-5" />
               </button>
-
-              <button
-                className={`px-4 py-2.5 font-bold rounded-xl transition-all flex items-center shadow-lg group active:scale-95 ${isRecording && recordingMode === 'tab'
-                  ? 'bg-red-600 text-white animate-pulse border border-red-500'
-                  : 'bg-white/5 text-white hover:bg-white/10 border border-white/10 hover:border-red-500/50'
-                  }`}
-                onClick={() => isRecording ? stopRecording() : startRecording('tab')}
-                disabled={!audioSupported || !apiStatus.gemini || !apiStatus.huggingface || (isRecording && recordingMode !== 'tab')}
-              >
-                <Monitor className={`w-4 h-4 mr-2 transition-transform group-hover:scale-110 ${isRecording ? 'text-white' : 'text-red-500'}`} />
-                {isRecording && recordingMode === 'tab' ? "Stop Capture" : "Capture Tab"}
-              </button>
-
-              <input
-                type="file"
-                accept="audio/*,video/*"
-                className="hidden"
-                ref={fileInputRef}
-                onChange={handleFileUpload}
-              />
-              <button
-                className="px-4 py-2.5 bg-white/5 text-white font-bold rounded-xl hover:bg-white/10 border border-white/10 hover:border-red-500/50 transition-all flex items-center shadow-lg active:scale-95 group"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isRecording || !apiStatus.gemini || !apiStatus.huggingface}
-              >
-                <Upload className="w-4 h-4 mr-2 text-red-500 transition-transform group-hover:-translate-y-1" />
-                Upload
-              </button>
-
-              {GOOGLE_CLIENT_ID_AVAILABLE ? (
-                <CalendarSyncButton
-                  onSyncSuccess={handleCalendarSyncSuccess}
-                  onSyncError={handleCalendarSyncError}
-                  isSyncing={isSyncingCalendar}
-                  disabled={isSyncingCalendar}
-                  className={`px-4 py-2.5 font-bold rounded-xl transition-all flex items-center shadow-lg active:scale-95 group border ${isCalendarConnected
-                    ? 'bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20'
-                    : 'bg-white/5 text-white border-white/10 hover:bg-white/10 hover:border-red-500/50'
-                    }`}
-                  title={isCalendarConnected ? "Refresh Google Calendar" : "Sync Google Calendar"}
-                >
-                  {isSyncingCalendar ? (
-                    <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin mr-2" />
-                  ) : (
-                    <CalendarIcon className={`w-4 h-4 mr-2 transition-transform group-hover:rotate-12 ${isCalendarConnected ? 'text-blue-400' : 'text-red-500'}`} />
-                  )}
-                  <span className="hidden sm:inline">{isSyncingCalendar ? 'Syncing...' : (isCalendarConnected ? 'Refresh' : 'Sync Cal')}</span>
-                  <span className="sm:hidden">{isSyncingCalendar ? '...' : (isCalendarConnected ? 'Ref' : 'Cal')}</span>
-                </CalendarSyncButton>
-              ) : (
-                <button
-                  disabled
-                  className="px-4 py-2.5 font-bold rounded-xl flex items-center shadow-lg border bg-white/5 text-gray-600 border-white/5 cursor-not-allowed"
-                  title="Google Client ID not configured"
-                >
-                  <CalendarIcon className="w-4 h-4 mr-2 text-gray-600" />
-                  <span className="hidden sm:inline">Sync Cal</span>
-                  <span className="sm:hidden">Cal</span>
-                </button>
-              )}
-
             </div>
           </div>
 
-          <div className="hidden lg:flex items-center space-x-6 w-full lg:w-auto justify-end">
-            <nav className="flex space-x-6 text-gray-400 font-bold text-xs uppercase tracking-widest bg-white/5 px-4 py-2 rounded-full border border-white/5">
-              <span className="text-red-500 cursor-default">Meetings</span>
-              <span className="hover:text-white cursor-pointer transition-colors" onClick={() => {/* navigate to calendar */ }}>Calendar</span>
+          {/* Recording Controls */}
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 z-40">
+            <button
+              className={`px-4 py-2 font-bold rounded-xl transition-all flex items-center shadow-lg group active:scale-95 text-xs md:text-sm ${isRecording && recordingMode === 'microphone'
+                ? 'bg-red-500 text-white animate-pulse border border-red-400'
+                : 'bg-white/5 text-white hover:bg-white/10 border border-white/10'
+                }`}
+              onClick={() => isRecording ? stopRecording() : startRecording('microphone')}
+              disabled={!audioSupported || !apiStatus.gemini || !apiStatus.huggingface || (isRecording && recordingMode !== 'microphone')}
+            >
+              <Mic className="w-3.5 h-3.5 mr-2 text-red-500" />
+              {isRecording && recordingMode === 'microphone' ? "Stop" : "Record Mic"}
+            </button>
+
+            <button
+              className={`px-4 py-2 font-bold rounded-xl transition-all flex items-center shadow-lg group active:scale-95 text-xs md:text-sm ${isRecording && recordingMode === 'tab'
+                ? 'bg-red-600 text-white animate-pulse border border-red-500'
+                : 'bg-white/5 text-white hover:bg-white/10 border border-white/10'
+                }`}
+              onClick={() => isRecording ? stopRecording() : startRecording('tab')}
+              disabled={!audioSupported || !apiStatus.gemini || !apiStatus.huggingface || (isRecording && recordingMode !== 'tab')}
+            >
+              <Monitor className="w-3.5 h-3.5 mr-2 text-red-500" />
+              {isRecording && recordingMode === 'tab' ? "Stop" : "Capture Tab"}
+            </button>
+
+            <input
+              type="file"
+              accept="audio/*,video/*"
+              className="hidden"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+            />
+            <button
+              className="px-4 py-2 bg-white/5 text-white font-bold rounded-xl hover:bg-white/10 border border-white/10 transition-all flex items-center shadow-lg active:scale-95 text-xs md:text-sm"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isRecording || !apiStatus.gemini || !apiStatus.huggingface}
+            >
+              <Upload className="w-3.5 h-3.5 mr-2 text-red-500" />
+              Upload
+            </button>
+
+            {GOOGLE_CLIENT_ID_AVAILABLE && (
+              <CalendarSyncButton
+                onSyncSuccess={handleCalendarSyncSuccess}
+                onSyncError={handleCalendarSyncError}
+                isSyncing={isSyncingCalendar}
+                disabled={isSyncingCalendar}
+                className={`px-4 py-2 font-bold rounded-xl transition-all flex items-center shadow-lg active:scale-95 text-xs md:text-sm border ${isCalendarConnected
+                  ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                  : 'bg-white/5 text-white border-white/10'
+                  }`}
+              >
+                <CalendarIcon className="w-3.5 h-3.5 mr-2 text-blue-400" />
+                {isCalendarConnected ? 'Ref' : 'Sync'}
+              </CalendarSyncButton>
+            )}
+          </div>
+
+          <div className="hidden lg:flex items-center gap-4">
+            <nav className="flex items-center gap-4 text-gray-400 font-bold text-[10px] uppercase tracking-widest bg-white/5 px-3 py-1.5 rounded-full border border-white/5">
+              <span className="text-red-500">Meetings</span>
+              <span className="opacity-30">/</span>
+              <span className="hover:text-white cursor-pointer transition-colors" onClick={() => setSelectedDate(new Date())}>Calendar</span>
             </nav>
             <button
               onClick={() => _setShowSettings(true)}
-              className="p-2.5 bg-white/5 hover:bg-red-500/10 text-gray-400 hover:text-red-400 rounded-xl border border-white/10 transition-all hover:rotate-90"
+              className="p-2 bg-white/5 hover:bg-red-500/10 text-gray-400 hover:text-red-400 rounded-xl border border-white/10 transition-all"
             >
               <Settings className="w-5 h-5" />
             </button>
@@ -1706,7 +1724,18 @@ export function MeetingSummarizer() {
                         {meeting.transcript && (
                           <div className={`text-gray-300 text-sm leading-relaxed p-4 rounded-xl border mt-3
                             ${meeting.type === 'calendar' ? 'bg-blue-500/5 border-blue-500/10' : 'bg-black/20 border-white/5'}`}>
-                            {meeting.transcript.substring(0, 300)}{meeting.transcript.length > 300 ? '...' : ''}
+                            {meeting.type === 'calendar' ? (
+                              <div className="space-y-1">
+                                {meeting.transcript.split('\n').filter(line => line.trim()).map((line, i) => (
+                                  <div key={i} className="flex gap-2">
+                                    <span className="text-gray-500">•</span>
+                                    <span className="truncate">{line}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <>{meeting.transcript.substring(0, 200)}{meeting.transcript.length > 200 ? '...' : ''}</>
+                            )}
                           </div>
                         )}
 

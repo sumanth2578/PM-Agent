@@ -1,4 +1,4 @@
-﻿@tailwind base;
+@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -17,6 +17,29 @@
     body {
         overflow-x: hidden;
         width: 100%;
+        scrollbar-width: thin;
+        scrollbar-color: #ef4444 rgba(0, 0, 0, 0.2);
+    }
+
+    /* Custom Webkit Scrollbar */
+    ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+        background: rgba(0, 0, 0, 0.1);
+        border-radius: 10px;
+    }
+
+    ::-webkit-scrollbar-thumb {
+        background: rgba(239, 68, 68, 0.3);
+        border-radius: 10px;
+        transition: background 0.3s ease;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+        background: rgba(239, 68, 68, 0.6);
     }
 }
 
@@ -703,6 +726,28 @@
         font-size: 0.9rem;
         min-width: 100%;
         /* Take full width on mobile sidebars */
+    }
+
+    /* Stack grid elements on mobile */
+    .grid-cols-2, .grid-cols-3, .grid-cols-4 {
+        grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
+    }
+
+    /* Adjust sidebar spacing */
+    aside {
+        width: 100% !important;
+        position: fixed !important;
+        height: 100% !important;
+        z-index: 100 !important;
+    }
+
+    main {
+        margin-left: 0 !important;
+        padding-top: 60px !important;
+    }
+
+    .flex-1.flex.flex-col.md\:ml-64 {
+        margin-left: 0 !important;
     }
 }
 

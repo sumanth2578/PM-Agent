@@ -60,9 +60,14 @@ export async function transcribeWithGoogleSpeech(audioBlob: Blob): Promise<strin
       return "No speech detected in the recording. Please try again with clearer audio.";
     }
 
-    // Combine all transcription results
+    interface GoogleSpeechAlternative {
+      transcript?: string;
+    }
+    interface GoogleSpeechResult {
+      alternatives: GoogleSpeechAlternative[];
+    }
     const transcript = data.results
-      .map((result: any) => result.alternatives[0]?.transcript || '')
+      .map((result: GoogleSpeechResult) => result.alternatives[0]?.transcript || '')
       .join(' ');
 
     if (transcript.trim() === '') {
