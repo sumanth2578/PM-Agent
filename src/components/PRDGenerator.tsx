@@ -152,7 +152,7 @@ export function PRDGenerator() {
             {/* Sidebar */}
             <aside className={`fixed inset-y-0 left-0 z-40 w-64 border-r transform transition-transform duration-300 ease-in-out flex flex-col pt-6 pb-4 ${theme === 'dark' ? 'bg-[#0B0C10] border-white/10' : 'bg-white border-slate-200'} ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
                 <div className="flex items-center justify-between px-6 mb-8 relative">
-                    <div className="font-extrabold text-2xl bg-clip-text text-transparent bg-gradient-to-r from-red-500 via-red-300 to-red-500 tracking-tighter animate-gradient">3.0Labs</div>
+                    <img src="/logo.png" alt="3.0Labs" className="h-10 w-auto object-contain" />
                     <button className="md:hidden text-gray-400 hover:text-white" onClick={() => setSidebarOpen(false)}>&times;</button>
                     {/* Tiny Sidebar Robot */}
                     <div className="absolute -top-4 -right-2 w-8 h-8 opacity-40">

@@ -1101,7 +1101,7 @@ interface GoogleCalendarEvent {
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 md:static md:h-full lg:w-80
       `}>
         <div className="flex items-center justify-between px-6 mb-8 relative">
-          <div className="font-extrabold text-2xl bg-clip-text text-transparent bg-gradient-to-r from-red-500 via-red-300 to-red-500 tracking-tighter animate-gradient">3.0Labs</div>
+          <img src="/logo.png" alt="3.0Labs" className="h-10 w-auto object-contain" />
           <button className="md:hidden text-gray-400 hover:text-white" onClick={() => setSidebarOpen(false)}>&times;</button>
 
           {/* Tiny Sidebar Robot */}
@@ -1229,10 +1229,11 @@ interface GoogleCalendarEvent {
               >
                 <Menu className="w-6 h-6" />
               </button>
-              <h1 className="text-lg md:text-xl font-bold text-white tracking-tight flex items-center gap-2">
-                <span className="w-1.5 h-6 bg-red-600 rounded-full animate-pulse shadow-[0_0_10px_rgba(220,38,38,0.5)]"></span>
-                Meetings
-              </h1>
+              <div className="flex items-center gap-3">
+                <img src="/logo.png" alt="3.0Labs" className="h-8 w-auto object-contain" />
+                <span className="text-gray-400 font-medium text-lg">/</span>
+                <h1 className="text-lg md:text-xl font-bold text-white tracking-tight">Meetings</h1>
+              </div>
             </div>
             
             <div className="flex lg:hidden items-center gap-2">
@@ -1304,19 +1305,26 @@ interface GoogleCalendarEvent {
             )}
           </div>
 
-          <div className="hidden lg:flex items-center gap-4">
-            <nav className="flex items-center gap-4 text-gray-400 font-bold text-[10px] uppercase tracking-widest bg-white/5 px-3 py-1.5 rounded-full border border-white/5">
-              <span className="text-red-500">Meetings</span>
-              <span className="opacity-30">/</span>
-              <span className="hover:text-white cursor-pointer transition-colors" onClick={() => setSelectedDate(new Date())}>Calendar</span>
-            </nav>
-            <button
-              onClick={() => _setShowSettings(true)}
-              className="p-2 bg-white/5 hover:bg-red-500/10 text-gray-400 hover:text-red-400 rounded-xl border border-white/10 transition-all"
-            >
-              <Settings className="w-5 h-5" />
-            </button>
-          </div>
+            <div className="flex items-center gap-4">
+              <div className="hidden sm:flex flex-col items-end">
+                <span className="text-[10px] font-black text-red-500 uppercase tracking-widest">Scheduled Meetings</span>
+                <span className="text-white font-bold text-sm flex items-center gap-2">
+                  <CalendarIcon className="w-3.5 h-3.5 text-red-500" />
+                  {calendarMeetings.length} Upcoming
+                </span>
+              </div>
+              <nav className="flex items-center gap-4 text-gray-400 font-bold text-[10px] uppercase tracking-widest bg-white/5 px-3 py-1.5 rounded-full border border-white/5">
+                <span className="text-red-500">Meetings</span>
+                <span className="opacity-30">/</span>
+                <span className="hover:text-white cursor-pointer transition-colors" onClick={() => setSelectedDate(new Date())}>Calendar</span>
+              </nav>
+              <button
+                onClick={() => _setShowSettings(true)}
+                className="p-2 bg-white/5 hover:bg-red-500/10 text-gray-400 hover:text-red-400 rounded-xl border border-white/10 transition-all"
+              >
+                <Settings className="w-5 h-5" />
+              </button>
+            </div>
         </header>
         <div className="flex flex-1 flex-col xl:flex-row relative overflow-hidden h-full">
           <section className="flex-1 px-4 md:px-10 py-8 overflow-y-auto z-10">
@@ -1369,7 +1377,7 @@ interface GoogleCalendarEvent {
                       className="px-6 py-2.5 bg-emerald-600 text-white font-semibold rounded-xl hover:bg-emerald-500 shadow-lg transition-all flex items-center gap-2"
                     >
                       <CheckCircle className="w-4 h-4" />
-                      Add to Meetings
+                      Add to Meeting
                     </button>
                     <button
                       onClick={() => setMeetingDetails({})}

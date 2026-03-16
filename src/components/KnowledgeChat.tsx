@@ -289,9 +289,7 @@ export default function KnowledgeChat() {
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
       `}>
                 <div className="flex items-center justify-between px-6 mb-8 relative">
-                    <div className="font-extrabold text-2xl bg-clip-text text-transparent bg-gradient-to-r from-red-500 via-red-300 to-red-500 tracking-tighter animate-gradient">
-                        3.0Labs
-                    </div>
+                    <img src="/logo.png" alt="3.0Labs" className="h-10 w-auto object-contain" />
                     <button className="md:hidden text-gray-400 hover:text-white" onClick={() => setSidebarOpen(false)}>
                         &times;
                     </button>
@@ -406,17 +404,16 @@ export default function KnowledgeChat() {
                         <button className="md:hidden" onClick={() => setSidebarOpen(true)}>
                             <Menu className="w-6 h-6" />
                         </button>
-                        <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center">
-                                <Brain className="w-6 h-6 text-red-500" />
-                            </div>
-                            <div>
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+                            <div className="flex items-center gap-3">
+                                <img src="/logo.png" alt="3.0Labs" className="h-8 w-auto object-contain" />
+                                <span className="text-gray-400 font-medium text-lg">/</span>
                                 <h1 className="text-xl font-bold tracking-tight">3.0 Agent</h1>
-                                <p className="text-[10px] text-red-500/80 uppercase font-black tracking-widest flex items-center gap-1">
-                                    <span className="w-1 h-1 bg-red-500 rounded-full animate-ping"></span>
-                                    {meetingHistory.length} MEETING CONTEXTS LOADED
-                                </p>
                             </div>
+                            <p className="text-[10px] text-red-500/80 uppercase font-black tracking-widest flex items-center gap-1">
+                                <span className="w-1 h-1 bg-red-500 rounded-full animate-ping"></span>
+                                {meetingHistory.length} MEETING CONTEXTS LOADED
+                            </p>
                         </div>
                     </div>
                     <button

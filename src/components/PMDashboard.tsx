@@ -212,7 +212,7 @@ export function PMDashboard() {
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
       `}>
                 <div className="flex items-center justify-between px-6 mb-8 relative">
-                    <div className="font-extrabold text-2xl bg-clip-text text-transparent bg-gradient-to-r from-red-500 via-red-300 to-red-500 tracking-tighter animate-gradient">3.0Labs</div>
+                    <img src="/logo.png" alt="3.0Labs" className="h-10 w-auto object-contain" />
                     <button className="md:hidden text-gray-400 hover:text-white" onClick={() => setSidebarOpen(false)}>&times;</button>
                     {/* Tiny Sidebar Robot */}
                     <div className="absolute -top-4 -right-2 w-8 h-8 opacity-40">

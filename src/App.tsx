@@ -9,13 +9,17 @@ import { UserStoriesGenerator } from './components/UserStoriesGenerator';
 import { SprintPlanner } from './components/SprintPlanner';
 import KnowledgeChat from './components/KnowledgeChat';
 import { ReminderManager } from './components/ReminderManager';
-import { CursorGlow } from './components/CursorGlow';
+import { SplashCursor } from './components/SplashCursor';
+import IntroPage from './components/IntroPage';
 import { ThemeProvider } from './context/ThemeContext';
 import { supabase } from './lib/supabase';
 
 
 function App() {
   const [session, setSession] = useState<any>(null);
+  const [showIntro, setShowIntro] = useState(() => {
+    return !sessionStorage.getItem('hasSeenIntro');
+  });
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -34,40 +38,47 @@ function App() {
   return (
     <ThemeProvider>
       <ReminderManager />
-      <CursorGlow />
+      <SplashCursor />
       <Router>
-        <Routes>
-          <Route path="/" element={<Navigate to="/auth" />} />
-          <Route
-            path="/summarizer"
-            element={session ? <MeetingSummarizer /> : <Navigate to="/auth" />}
-          />
-          <Route
-            path="/history"
-            element={session ? <MeetingHistory /> : <Navigate to="/auth" />}
-          />
-          <Route
-            path="/pm-dashboard"
-            element={session ? <PMDashboard /> : <Navigate to="/auth" />}
-          />
-          <Route
-            path="/prd-generator"
-            element={session ? <PRDGenerator /> : <Navigate to="/auth" />}
-          />
-          <Route
-            path="/user-stories"
-            element={session ? <UserStoriesGenerator /> : <Navigate to="/auth" />}
-          />
-          <Route
-            path="/sprint-planner"
-            element={session ? <SprintPlanner /> : <Navigate to="/auth" />}
-          />
-          <Route
-            path="/ai-chat"
-            element={session ? <KnowledgeChat /> : <Navigate to="/auth" />}
-          />
-          <Route path="/auth" element={<Auth />} />
-        </Routes>
+        {showIntro ? (
+          <IntroPage onComplete={() => {
+            sessionStorage.setItem('hasSeenIntro', 'true');
+            setShowIntro(false);
+          }} />
+        ) : (
+          <Routes>
+            <Route path="/" element={<IntroPage />} />
+            <Route
+              path="/summarizer"
+              element={session ? <MeetingSummarizer /> : <Navigate to="/auth" />}
+            />
+            <Route
+              path="/history"
+              element={session ? <MeetingHistory /> : <Navigate to="/auth" />}
+            />
+            <Route
+              path="/pm-dashboard"
+              element={session ? <PMDashboard /> : <Navigate to="/auth" />}
+            />
+            <Route
+              path="/prd-generator"
+              element={session ? <PRDGenerator /> : <Navigate to="/auth" />}
+            />
+            <Route
+              path="/user-stories"
+              element={session ? <UserStoriesGenerator /> : <Navigate to="/auth" />}
+            />
+            <Route
+              path="/sprint-planner"
+              element={session ? <SprintPlanner /> : <Navigate to="/auth" />}
+            />
+            <Route
+              path="/ai-chat"
+              element={session ? <KnowledgeChat /> : <Navigate to="/auth" />}
+            />
+            <Route path="/auth" element={<Auth />} />
+          </Routes>
+        )}
       </Router>
     </ThemeProvider>
   );
