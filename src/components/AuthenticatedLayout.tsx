@@ -52,7 +52,7 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
 
       {/* Mobile Menu Button */}
       <button
-        className="md:hidden fixed top-4 right-4 z-50 bg-[#0B0C10] border border-white/10 rounded-full p-2 shadow-lg"
+        className="md:hidden fixed top-4 left-4 z-50 bg-[#0B0C10] border border-white/10 rounded-full p-2 shadow-lg"
         onClick={() => setSidebarOpen(!sidebarOpen)}
         aria-label="Open menu"
       >

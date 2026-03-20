@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Mic, MicOff, Monitor, Upload, CheckCircle, Settings, Menu, Clock, Video, Phone, Link2, ExternalLink, Sparkles, FileText, Users, Calendar as CalendarIcon, History } from 'lucide-react';
+import { Mic, MicOff, Monitor, Upload, CheckCircle, Settings, Clock, Video, Phone, Link2, ExternalLink, Sparkles, FileText, Users, Calendar as CalendarIcon, History } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -479,11 +479,8 @@ export function MeetingSummarizer() {
       setIsCalendarConnected(true);
     }
 
-    // Auto-close sidebar on window resize if switching to desktop
     const handleResize = () => {
-      if (window.innerWidth >= 768) {
-        setSidebarOpen(false);
-      }
+      // Logic moved to AuthenticatedLayout
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
@@ -1079,25 +1076,13 @@ interface GoogleCalendarEvent {
         <div className="hidden sm:block absolute top-1/3 right-1/4 w-40 md:w-60 h-40 md:h-60 bg-red-500/10 rounded-full blur-[60px] md:blur-[80px] animate-orb-pulse pointer-events-none"></div>
         <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-red-500 to-transparent animate-shimmer z-20"></div>
 
-        {/* Mobile Sidebar Overlay */}
-        {sidebarOpen && (
-          <div
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] md:hidden animate-fade-in"
-            onClick={() => setSidebarOpen(false)}
-          />
-        )}
+        <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-red-500 to-transparent animate-shimmer z-20"></div>
 
         <header className="flex flex-col lg:flex-row items-center justify-between px-3 sm:px-4 md:px-8 py-3 sm:py-4 bg-[#0B0C10]/80 backdrop-blur-xl border-b border-red-500/10 z-30 flex-shrink-0 gap-2 sm:gap-4">
           <div className="flex items-center justify-between w-full lg:w-auto gap-4">
             <div className="flex items-center gap-4">
-              <button
-                className="md:hidden text-gray-400 hover:text-white p-2 hover:bg-white/5 rounded-lg transition-all"
-                onClick={() => setSidebarOpen(true)}
-                aria-label="Open Menu"
-              >
-                <Menu className="w-6 h-6" />
-              </button>
-                      <div className="flex items-center gap-3">
+              {/* Mobile Menu Toggle logic handled by AuthenticatedLayout */}
+              <div className="flex items-center gap-3">
             <button 
               onClick={handleLogoClick}
               className="block transition-transform hover:scale-105 active:scale-95 focus:outline-none"
