@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { Mic, MicOff, Monitor, Upload, CheckCircle, Sun, Moon, LogOut, Settings, Menu, History, Clock, Home, Brain, Sparkles, FileText, Users, Calendar as CalendarIcon, Video, Phone, Link2, ExternalLink } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Mic, MicOff, Monitor, Upload, CheckCircle, Settings, Menu, Clock, Video, Phone, Link2, ExternalLink, Sparkles, FileText, Users, Calendar as CalendarIcon, History } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI } from '@google-generative-ai';
+import { useRecording } from '../context/RecordingContext';
 import { generatePRD, generateUserStories, generateSprintPlan, transcribeWithGroqWhisper, summarizeMeeting } from '../lib/gemini';
 import { useGoogleLogin } from '@react-oauth/google';
 
@@ -13,6 +14,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 // @ts-ignore
 import html2pdf from 'html2pdf.js';
+import { recallService } from '../lib/recall';
 
 declare global {
   interface Window {
@@ -45,10 +47,9 @@ interface MeetingSummary {
   type?: 'recorded' | 'calendar'; // Distinguish between recorded and synced meetings
   link?: string;
   platform?: string;
+  is_calendar?: boolean;
   highlights?: Highlight[];
 }
-
-type SpeechService = 'gemini';
 
 const GOOGLE_CLIENT_ID_AVAILABLE = !!import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
@@ -76,40 +77,43 @@ function CalendarSyncButton({ onSyncSuccess, onSyncError, isSyncing, children, .
 }
 
 export function MeetingSummarizer() {
+  const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingMode, setRecordingMode] = useState<'microphone' | 'tab' | null>(null);
-  const [isPaused, setIsPaused] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [transcribing, setTranscribing] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [startTime, setStartTime] = useState<Date | null>(null);
-  const [duration, setDuration] = useState(0);
   const [summaryHistory, setSummaryHistory] = useState<MeetingSummary[]>([]);
-  const [_isEmailDialogOpen, _setIsEmailDialogOpen] = useState(false);
-  const [audioURL, setAudioURL] = useState<string | null>(null);
-  const [audioSupported, setAudioSupported] = useState(true);
-  const [apiStatus, setApiStatus] = useState<{ gemini: boolean; huggingface: boolean }>({
-    gemini: true,
-    huggingface: true
-  });
-  const [_speechService] = useState<SpeechService>('gemini');
-  const [_showSettings, _setShowSettings] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [userEmail, setUserEmail] = useState('');
+  const [_showSettings, _setShowSettings] = useState(false);
   const [userName, setUserName] = useState('');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [meetingLink, setMeetingLink] = useState('');
-  const [meetingDetails, setMeetingDetails] = useState<{
-    platform?: string;
-    date?: string;
-    time?: string;
-    duration?: string;
-    error?: string;
-    link?: string;
-    timezone?: string;
-  }>({});
+  const [sidebarOpen, setSidebarOpen] = useState(false); // Still needed for internal logic if any, but sidebar itself is external
+    const [meetingLink, setMeetingLink] = useState(() => localStorage.getItem('last_meeting_link') || '');
+    const [meetingDetails, setMeetingDetails] = useState<{
+        platform?: string;
+        date?: string;
+        time?: string;
+        duration?: string;
+        error?: string;
+        link?: string;
+        timezone?: string;
+    }>(() => {
+        const saved = localStorage.getItem('last_meeting_details');
+        return saved ? JSON.parse(saved) : {};
+    });
+
+    useEffect(() => {
+        localStorage.setItem('last_meeting_link', meetingLink);
+    }, [meetingLink]);
+
+    useEffect(() => {
+        if (Object.keys(meetingDetails).length > 0) {
+            localStorage.setItem('last_meeting_details', JSON.stringify(meetingDetails));
+        } else {
+            localStorage.removeItem('last_meeting_details');
+        }
+    }, [meetingDetails]);
 
   // PM Agent state
   const [pmLoading, setPmLoading] = useState(false);
@@ -117,17 +121,246 @@ export function MeetingSummarizer() {
   const [pmUserStories, setPmUserStories] = useState<string | null>(null);
   const [pmSprintPlan, setPmSprintPlan] = useState<string | null>(null);
   const [pmActiveTab, setPmActiveTab] = useState<'prd' | 'stories' | 'sprint'>('prd');
-  const [highlights, setHighlights] = useState<Highlight[]>([]);
+  const [pmStatus, setPmStatus] = useState<string>('');
+  
+  // Highlights, duration, etc. moved to useRecording
+  const { 
+    isRecording, isPaused, duration, audioURL, highlights, 
+    startRecording, stopRecording, pauseRecording, resumeRecording, markMoment,
+    clearRecording, recordingMode, apiStatus, audioSupported
+  } = useRecording();
 
-  const markMoment = () => {
-    if (!isRecording || isPaused) return;
-    const newHighlight = {
-      timestamp: duration,
-      label: 'Key Moment'
+  const [activeBots, setActiveBots] = useState<Record<string, any>>({});
+  const autoFetchTriggeredRef = useRef<Set<string>>(new Set());
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [botName, setBotName] = useState('3.0 Agent');
+  const [mainView, setMainView] = useState<'meetings' | 'agent'>('meetings');
+  const [welcomeBack, setWelcomeBack] = useState<{ show: boolean; meetingUrl?: string }>({ show: false });
+
+  const resetAgentState = () => {
+    setTranscript('');
+    setSummary(null);
+    setPmPRD(null);
+    setPmUserStories(null);
+    setPmSprintPlan(null);
+    setPmStatus('');
+    setError(null);
+    clearRecording(); // From context
+    setPmLoading(false);
+    setMainView('meetings');
+  };
+
+  const handleLogoClick = () => {
+    if (mainView === 'agent') {
+      resetAgentState();
+    } else {
+      navigate('/summarizer');
+      // If already on summarizer, maybe just refresh list or do nothing
+    }
+  };
+
+  // markMoment replaced by context version
+
+  // Poll bot status for active bots
+  useEffect(() => {
+    const activeBotIds = Object.keys(activeBots).filter(id => 
+      ['pending_join', 'joining', 'in_call'].includes(activeBots[id]?.status)
+    );
+
+    if (activeBotIds.length === 0) return;
+
+    const interval = setInterval(async () => {
+      for (const id of activeBotIds) {
+        try {
+          const updatedBot = await recallService.getBotStatus(id);
+          setActiveBots(prev => ({ ...prev, [id]: updatedBot }));
+
+          // Auto-fetch transcript and generate outputs when bot finishes
+          if ((updatedBot.status === 'done' || updatedBot.status === 'left') &&
+              !autoFetchTriggeredRef.current.has(id)) {
+            autoFetchTriggeredRef.current.add(id);
+            handleFetchBotTranscript(id);
+          }
+        } catch (err) {
+          console.error(`Failed to poll status for bot ${id}:`, err);
+        }
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [activeBots]);
+
+  // On mount: check Recall API for any recently completed bots not yet processed
+  useEffect(() => {
+    const checkOnMount = async () => {
+      try {
+        if (!userEmail) return; // Wait until we have the user ID
+
+        const { results } = await recallService.listBots();
+        const processedIds: string[] = JSON.parse(localStorage.getItem('processed_bot_ids') || '[]');
+
+        // Filter bots by user_id and find completed ones
+        const cutoff = Date.now() - 3 * 60 * 60 * 1000;
+        const unprocessed = results.filter(b =>
+          b.metadata?.user_id === userEmail &&
+          (b.status === 'done' || b.status === 'left') &&
+          !processedIds.includes(b.id) &&
+          new Date(b.created_at).getTime() > cutoff
+        );
+
+        if (unprocessed.length > 0) {
+          const latest = unprocessed[0];
+          setActiveBots(prev => ({ ...prev, [latest.id]: latest }));
+          setMainView('agent');
+          setWelcomeBack({ show: true, meetingUrl: latest.meeting_url });
+          setTimeout(() => setWelcomeBack({ show: false }), 8000);
+
+          if (!autoFetchTriggeredRef.current.has(latest.id)) {
+            autoFetchTriggeredRef.current.add(latest.id);
+            // Mark as processed
+            const updated = [...processedIds, latest.id];
+            localStorage.setItem('processed_bot_ids', JSON.stringify(updated));
+            handleFetchBotTranscript(latest.id);
+          }
+        }
+
+        // Restore any still-active bots into state (survived page refresh)
+        const activeBotResults = results.filter(b =>
+          b.metadata?.user_id === userEmail &&
+          ['pending_join', 'joining', 'in_call'].includes(b.status)
+        );
+        if (activeBotResults.length > 0) {
+          const botMap: Record<string, typeof activeBotResults[0]> = {};
+          activeBotResults.forEach(b => { botMap[b.id] = b; });
+          setActiveBots(prev => ({ ...prev, ...botMap }));
+          setMainView('agent');
+        }
+      } catch (err) {
+        console.error('Recall API mount check failed:', err);
+      }
     };
-    setHighlights(prev => [...prev, newHighlight]);
+    checkOnMount();
+  }, [userEmail]);
 
-    // Optional: Visual feedback could be added here
+  // Welcome back: re-check bot statuses when user returns to the tab
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState !== 'visible' || !userEmail) return;
+
+      const botsToCheck = Object.keys(activeBots).filter(id =>
+        activeBots[id]?.metadata?.user_id === userEmail &&
+        ['pending_join', 'joining', 'in_call'].includes(activeBots[id]?.status)
+      );
+      if (botsToCheck.length === 0) return;
+
+      // Re-poll immediately on tab focus
+      for (const id of botsToCheck) {
+        try {
+          const updatedBot = await recallService.getBotStatus(id);
+          setActiveBots(prev => ({ ...prev, [id]: updatedBot }));
+
+          if ((updatedBot.status === 'done' || updatedBot.status === 'left') &&
+              !autoFetchTriggeredRef.current.has(id)) {
+            autoFetchTriggeredRef.current.add(id);
+            setWelcomeBack({ show: true, meetingUrl: updatedBot.meeting_url });
+            setMainView('agent');
+            // Auto-dismiss welcome banner after 6s
+            setTimeout(() => setWelcomeBack({ show: false }), 6000);
+            handleFetchBotTranscript(id);
+          }
+        } catch (err) {
+          console.error('Failed to re-check bot on return:', err);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [activeBots, userEmail]);
+
+  const handleJoinMeetingBot = async () => {
+    try {
+      const urlToJoin = meetingLink || meetingDetails.link;
+      if (!urlToJoin) throw new Error('No meeting link found');
+      if (!userEmail) throw new Error('User not authenticated');
+      
+      setTranscribing(true);
+      setMainView('agent');
+      const bot = await recallService.createBot(urlToJoin, botName, { user_id: userEmail });
+      setActiveBots(prev => ({ ...prev, [bot.id]: bot }));
+      setError(null);
+    } catch (err) {
+      console.error('Error joining meeting bot:', err);
+      setError(err instanceof Error ? err.message : 'Failed to join meeting bot');
+    } finally {
+      setTranscribing(false);
+    }
+  };
+
+  const handleFetchBotTranscript = async (botId: string) => {
+    try {
+      setTranscribing(true);
+      setPmStatus('Fetching transcript from bot...');
+      
+      // Retry loop for transcript (up to 3 attempts with 5s delay)
+      let recallTranscript = null;
+      let attempts = 0;
+      const maxAttempts = 3;
+
+      while (attempts < maxAttempts) {
+        try {
+          recallTranscript = await recallService.getBotTranscript(botId);
+          if (recallTranscript && recallTranscript.length > 0) break;
+        } catch (err) {
+          console.warn(`Transcript fetch attempt ${attempts + 1} failed:`, err);
+        }
+        attempts++;
+        if (attempts < maxAttempts) {
+          setPmStatus(`Transcript not ready, retrying... (Attempt ${attempts + 1}/${maxAttempts})`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+      }
+
+      if (!recallTranscript || recallTranscript.length === 0) {
+        throw new Error('Transcript is still being processed by the bot. Please try fetching manually in a few minutes.');
+      }
+
+      setPmStatus('Summarizing meeting...');
+      const formattedTranscript = recallService.formatTranscript(recallTranscript);
+      const summaryText = await summarizeMeeting(formattedTranscript);
+      
+      const newSummary: MeetingSummary = {
+        id: Date.now().toString(),
+        date: new Date().toISOString(),
+        duration: 0,
+        summary: summaryText,
+        transcript: formattedTranscript,
+        type: 'recorded'
+      };
+
+      await saveMeetingToDatabase(newSummary);
+      setSummary(summaryText);
+      setTranscript(formattedTranscript);
+
+      // Mark bot as processed so we don't re-fetch on next mount
+      const processedIds: string[] = JSON.parse(localStorage.getItem('processed_bot_ids') || '[]');
+      localStorage.setItem('processed_bot_ids', JSON.stringify([...processedIds, botId]));
+
+      setActiveBots(prev => {
+        const next = { ...prev };
+        delete next[botId];
+        return next;
+      });
+
+      setPmStatus('Generating PM insights...');
+      generatePMOutputs(summaryText);
+    } catch (err) {
+      console.error('Error fetching bot transcript:', err);
+      setError(err instanceof Error ? err.message : 'Failed to fetch transcript from bot');
+      setPmStatus('');
+    } finally {
+      setTranscribing(false);
+    }
   };
 
   const generatePMOutputs = async (summaryText: string) => {
@@ -137,8 +370,7 @@ export function MeetingSummarizer() {
     setPmUserStories(null);
     setPmSprintPlan(null);
 
-    // Wait before starting PM calls to avoid rate limiting after summary
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    // Start PM calls immediately, each with internal staggered delays
 
     try {
       // Get fresh user ID to be certain
@@ -146,10 +378,9 @@ export function MeetingSummarizer() {
       const currentUserId = user?.id;
 
       // Generate PRD first
+      setPmStatus('Drafting PRD...');
       let prd = await generatePRD(summaryText).catch((e) => { console.error('PRD error:', e); return 'Failed to generate PRD. Please try again from the PRD Generator page.'; });
 
-      // Cleanup literal stars that user dislikes
-      prd = prd.replace(/\*\*/g, '').replace(/^\* /gm, '• ');
       setPmPRD(prd);
 
       // Save PRD to dedicated table if we have a currentUserId
@@ -157,6 +388,7 @@ export function MeetingSummarizer() {
         try {
           await supabase.from('prds').insert([{
             user_id: currentUserId,
+            id: Date.now().toString(), // Ensure unique ID
             title: `Report: ${new Date().toLocaleDateString()}`,
             content: prd
           }]);
@@ -168,11 +400,8 @@ export function MeetingSummarizer() {
       // Small delay between calls
       await new Promise(resolve => setTimeout(resolve, 3000));
 
-      // Generate User Stories
+      setPmStatus('Creating User Stories...');
       let stories = await generateUserStories(summaryText).catch((e: any) => { console.error('Stories error:', e); return 'Failed to generate user stories. Please try again from the User Stories page.'; });
-
-      // Cleanup
-      stories = stories.replace(/\*\*/g, '').replace(/^\* /gm, '• ');
       setPmUserStories(stories);
 
       // Save Stories to dedicated table
@@ -180,6 +409,7 @@ export function MeetingSummarizer() {
         try {
           await supabase.from('user_stories').insert([{
             user_id: currentUserId,
+            id: Date.now().toString(), // Ensure unique ID
             feature: `Meeting: ${new Date().toLocaleDateString()}`,
             content: stories
           }]);
@@ -191,11 +421,8 @@ export function MeetingSummarizer() {
       // Small delay between calls
       await new Promise(resolve => setTimeout(resolve, 3000));
 
-      // Generate Sprint Plan
+      setPmStatus('Designing Sprint Plan...');
       let sprint = await generateSprintPlan(summaryText).catch((e: any) => { console.error('Sprint error:', e); return 'Failed to generate sprint plan. Please try again from the Sprint Planner page.'; });
-
-      // Cleanup
-      sprint = sprint.replace(/\*\*/g, '').replace(/^\* /gm, '• ');
       setPmSprintPlan(sprint);
 
       // Save Sprint to dedicated table
@@ -203,6 +430,7 @@ export function MeetingSummarizer() {
         try {
           await supabase.from('sprint_plans').insert([{
             user_id: currentUserId,
+            id: Date.now().toString(), // Ensure unique ID
             backlog: `Auto-generated from meeting summary`,
             duration: `2 weeks`,
             content: sprint
@@ -211,8 +439,15 @@ export function MeetingSummarizer() {
           console.error('Error auto-saving Sprint:', e);
         }
       }
+
+      setPmStatus('Processing complete!');
+      setTimeout(() => setPmStatus(''), 5000);
+
+      // Auto-scroll to insights
+      document.getElementById('pm-insights-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
       console.error('PM generation error:', err);
+      setPmStatus('Error generating insights.');
     } finally {
       setPmLoading(false);
     }
@@ -220,6 +455,8 @@ export function MeetingSummarizer() {
 
   const [activeSession, setActiveSession] = useState<MeetingSummary | null>(null);
   const [calendarMeetings, setCalendarMeetings] = useState<MeetingSummary[]>([]);
+  const [fetchedCalendarEvents, setFetchedCalendarEvents] = useState<MeetingSummary[]>([]);
+  const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [isCalendarConnected, setIsCalendarConnected] = useState(false);
   const [isSyncingCalendar, setIsSyncingCalendar] = useState(false);
 
@@ -233,18 +470,13 @@ export function MeetingSummarizer() {
     };
     fetchUserDetails();
 
-    // Check if we have a cached calendar connection
+    // Clear legacy ghost data from localStorage (one-time cleanup)
+    localStorage.removeItem('calendarEvents_v2');
+    
+    // Check if we have a cached calendar connection status
     const storedCalendarState = localStorage.getItem('isCalendarConnected');
     if (storedCalendarState === 'true') {
       setIsCalendarConnected(true);
-      const storedEvents = localStorage.getItem('calendarEvents_v2');
-      if (storedEvents) {
-        try {
-          setCalendarMeetings(JSON.parse(storedEvents));
-        } catch (e) {
-          console.error("Failed to parse stored events", e);
-        }
-      }
     }
 
     // Auto-close sidebar on window resize if switching to desktop
@@ -302,10 +534,11 @@ interface GoogleCalendarEvent {
           platform
         };
       });
-      setCalendarMeetings(events);
+      
+      setFetchedCalendarEvents(events);
+      setShowCalendarModal(true);
       setIsCalendarConnected(true);
       localStorage.setItem('isCalendarConnected', 'true');
-      localStorage.setItem('calendarEvents_v2', JSON.stringify(events));
     } catch (err) {
       console.error('Error connecting calendar:', err);
       setError('Failed to sync Google Calendar. Please try again.');
@@ -320,61 +553,6 @@ interface GoogleCalendarEvent {
     setError('Google Calendar authentication failed.');
   };
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const durationIntervalRef = useRef<number | null>(null);
-  const activeStreamsRef = useRef<MediaStream[]>([]);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const maxRecordingDuration = 7200; // Increased to 2 hours (7200 seconds)
-
-  useEffect(() => {
-    // Feature Check ONLY - do NOT call getUserMedia here to avoid premature prompt
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setAudioSupported(false);
-      // We don't set error yet, only when user tries to record
-    }
-    const checkApiKeys = async () => {
-      const geminiKey = import.meta.env.VITE_GEMINI_API_KEY;
-      const huggingfaceKey = import.meta.env.VITE_HUGGINGFACE_API_KEY;
-      setApiStatus({
-        gemini: !!geminiKey,
-        huggingface: !!huggingfaceKey
-      });
-    };
-    checkApiKeys();
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (durationIntervalRef.current) {
-        clearInterval(durationIntervalRef.current);
-      }
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        stopRecording();
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (startTime && !isPaused) {
-      durationIntervalRef.current = window.setInterval(() => {
-        const now = new Date();
-        const diff = Math.floor((now.getTime() - startTime.getTime()) / 1000);
-        setDuration(diff);
-        if (diff >= maxRecordingDuration) {
-          stopRecording();
-        }
-      }, 1000);
-    } else if (durationIntervalRef.current) {
-      clearInterval(durationIntervalRef.current);
-    }
-    return () => {
-      if (durationIntervalRef.current) {
-        clearInterval(durationIntervalRef.current);
-      }
-    };
-  }, [startTime, isPaused]);
-
   const formatDuration = (seconds: number) => {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
@@ -382,160 +560,21 @@ interface GoogleCalendarEvent {
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const startRecording = async (mode: 'microphone' | 'tab' = 'microphone') => {
+  // Recording methods now come from context
+  const handleStartRecording = async (mode: 'microphone' | 'tab' = 'microphone') => {
     try {
-      setError(null);
-      setHighlights([]); // Reset highlights for new recording
-      setDuration(0);
-      setAudioURL(null);
-      if (!apiStatus.huggingface) {
-        throw new Error('Hugging Face API key is missing. Please check your .env file.');
-      }
-      if (!apiStatus.gemini) {
-        throw new Error('Google Gemini API key is missing. Please check your .env file.');
-      }
-      if (mode === 'microphone' && (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)) {
-        throw new Error('Audio recording is not supported in this browser. Try using Chrome or Firefox.');
-      }
-      if (mode === 'tab' && (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia)) {
-        throw new Error('Tab capturing is not supported in this browser.');
-      }
-
-      let stream: MediaStream;
-      activeStreamsRef.current = [];
-
-      if (mode === 'microphone') {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          }
-        });
-        activeStreamsRef.current.push(stream);
-      } else {
-        const displayStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: true
-        });
-        activeStreamsRef.current.push(displayStream);
-
-        // We only want audio, so stop video tracks immediately
-        displayStream.getVideoTracks().forEach(track => track.stop());
-
-        // Ensure there's actually an audio track
-        if (displayStream.getAudioTracks().length === 0) {
-          displayStream.getTracks().forEach(t => t.stop());
-          throw new Error('No audio track selected. Make sure to check "Share audio" when sharing a tab.');
-        }
-
-        // Try to capture microphone as well to mix
-        let micStream: MediaStream | null = null;
-        try {
-          micStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true
-            }
-          });
-          activeStreamsRef.current.push(micStream);
-        } catch (micErr) {
-          console.warn('Microphone access denied or unavailable during tab capture:', micErr);
-        }
-
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-        audioContextRef.current = audioContext;
-        const dest = audioContext.createMediaStreamDestination();
-
-        // Add tab audio to mixer
-        const tabSource = audioContext.createMediaStreamSource(new MediaStream([displayStream.getAudioTracks()[0]]));
-        tabSource.connect(dest);
-
-        // Add mic audio to mixer if available
-        if (micStream && micStream.getAudioTracks().length > 0) {
-          const micSource = audioContext.createMediaStreamSource(new MediaStream([micStream.getAudioTracks()[0]]));
-          micSource.connect(dest);
-        }
-
-        stream = dest.stream;
-
-        // When the user clicks "Stop sharing" on the browser's native UI
-        displayStream.getAudioTracks()[0].onended = () => {
-          if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-            stopRecording();
-          }
-        };
-      }
-      // Compress audio bitrate so a 2-hour meeting perfectly fits within Gemini's 20MB limit (~14MB)
-      let options: MediaRecorderOptions = { audioBitsPerSecond: 16000 };
-      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-        options = { ...options, mimeType: 'audio/webm;codecs=opus' };
-      } else if (MediaRecorder.isTypeSupported('audio/webm')) {
-        options = { ...options, mimeType: 'audio/webm' };
-      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-        options = { ...options, mimeType: 'audio/mp4' };
-      } else if (MediaRecorder.isTypeSupported('audio/ogg')) {
-        options = { ...options, mimeType: 'audio/ogg' };
-      }
-      const mediaRecorder = new MediaRecorder(stream, options);
-      audioChunksRef.current = [];
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-      mediaRecorder.onstop = () => {
-        try {
-          if (audioChunksRef.current.length === 0) {
-            throw new Error('No audio data was recorded. Please try again.');
-          }
-          const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' });
-          if (audioBlob.size < 1000) {
-            throw new Error('Audio recording is too short or empty. Please try again.');
-          }
-          const url = URL.createObjectURL(audioBlob);
-          setAudioURL(url);
-        } catch (err) {
-          console.error('Error processing recorded audio:', err);
-          setError(err instanceof Error ? err.message : 'Failed to process recorded audio');
-        }
-      };
-      mediaRecorderRef.current = mediaRecorder;
-      mediaRecorder.start(1000);
-      setIsRecording(true);
-      setRecordingMode(mode);
-      setStartTime(new Date());
+      setMainView('agent');
+      // Clear previous recording data to ensure processing effect triggers for the new one
+      setSummary(null);
+      setTranscript('');
+      await startRecording(mode);
     } catch (err) {
-      console.error('Error starting recording:', err);
       setError(err instanceof Error ? err.message : 'Failed to start recording');
     }
   };
 
-  const pauseRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      try {
-        mediaRecorderRef.current.pause();
-        setIsPaused(true);
-      } catch (err) {
-        console.error('Error pausing recording:', err);
-        setError(err instanceof Error ? err.message : 'Failed to pause recording');
-      }
-    }
-  };
-
-  const resumeRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
-      try {
-        mediaRecorderRef.current.resume();
-        setIsPaused(false);
-      } catch (err) {
-        console.error('Error resuming recording:', err);
-        setError(err instanceof Error ? err.message : 'Failed to resume recording');
-      }
-    }
+  const handleStopRecording = () => {
+    stopRecording();
   };
 
   const transcribeAndSummarizeWithGemini = async (audioBlob: Blob) => {
@@ -557,13 +596,14 @@ interface GoogleCalendarEvent {
       reader.readAsDataURL(audioBlob);
       const base64Data = await base64Promise;
 
-      const prompt = `Please transcribe the following audio. Identity different speakers and label them (e.g., [Speaker A], [Speaker B]). 
-      Then provide a concise summary.
+      const prompt = `Please transcribe the following audio in English. If multiple languages are spoken, translate everything to English. Identity different speakers and label them (e.g., [Speaker A], [Speaker B]). 
+      Then provide a highly professional, comprehensive, and structured summary in English.
+      Use professional Markdown formatting including bolding for emphasis. Use clean bullet points (-).
       Format your response exactly as follows:
       ---TRANSCRIPTION---
-      [Verbatim transcription with speaker labels here]
+      [Verbatim English transcription/translation with speaker labels here]
       ---SUMMARY---
-      [Concise summary here]`;
+      [Professional English summary here]`;
 
       // Gemini is picky about MIME types - normalize to standard ones
       let mimeType = audioBlob.type.split(';')[0]; // Remove codecs etc.
@@ -608,169 +648,93 @@ interface GoogleCalendarEvent {
     }
   };
 
-  const stopRecording = async () => {
-    if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') {
-      return;
-    }
+  // Effect to process recording when it completes in the context
+  useEffect(() => {
+    if (audioURL && !summary && !transcribing && !isRecording) {
+      const processRecording = async () => {
+        setTranscribing(true);
+        setError(null);
+        try {
+          const response = await fetch(audioURL);
+          const blob = await response.blob();
+          
+          if (blob.size < 1000) {
+            throw new Error('Audio recording is too short or empty.');
+          }
 
-    // Wrap the stop logic in a promise to ensure we only proceed after onstop fires
-    const stopPromise = new Promise<void>((resolve) => {
-      if (!mediaRecorderRef.current) return resolve();
+          const result = await transcribeAndSummarizeWithGemini(blob);
+          
+          if (result.transcription) {
+            setTranscript(result.transcription);
+            setSummary(result.summary || '');
 
-      const originalOnStop = mediaRecorderRef.current.onstop;
-      mediaRecorderRef.current.onstop = (e) => {
-        if (originalOnStop) originalOnStop.call(mediaRecorderRef.current!, e);
-        resolve();
+            const newSummary: MeetingSummary = {
+              id: Date.now().toString(),
+              date: new Date().toISOString(),
+              duration,
+              summary: result.summary || '',
+              transcript: result.transcription,
+              highlights: [...highlights]
+            };
+            setSummaryHistory(prev => [newSummary, ...prev]);
+            saveMeetingToDatabase(newSummary);
+            setActiveSession(newSummary);
+            
+            if (result.summary) {
+              generatePMOutputs(result.summary);
+            }
+          }
+        } catch (err) {
+          console.error('Error processing audio from context:', err);
+          setError(err instanceof Error ? err.message : 'Failed to process recording');
+        } finally {
+          setTranscribing(false);
+        }
       };
-
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-
-      // Stop all active original streams (tab, mic)
-      activeStreamsRef.current.forEach(stream => {
-        stream.getTracks().forEach(track => track.stop());
-      });
-      activeStreamsRef.current = [];
-
-      // Close AudioContext
-      if (audioContextRef.current) {
-        audioContextRef.current.close().catch(console.error);
-        audioContextRef.current = null;
-      }
-    });
-
-    try {
-      await stopPromise;
-      setIsRecording(false);
-      setRecordingMode(null);
-      setIsPaused(false);
-    } catch (err) {
-      console.error('Error stopping recording:', err);
-      setError(err instanceof Error ? err.message : 'Failed to stop recording');
-      setIsRecording(false);
-      setRecordingMode(null);
-      setIsPaused(false);
-      return;
+      processRecording();
     }
-
-    setAudioURL(null); // Clear previous audio URL
-
-    if (audioChunksRef.current.length > 0) {
-      setTranscribing(true);
-      setError(null);
-      try {
-        const audioBlob = new Blob(audioChunksRef.current, {
-          type: mediaRecorderRef.current?.mimeType || 'audio/webm'
-        });
-
-        // Now safe to clear
-        audioChunksRef.current = [];
-
-        if (audioBlob.size < 1000) {
-          throw new Error('Audio recording is too short or empty. Please try again.');
-        }
-
-        const result = await transcribeAndSummarizeWithGemini(audioBlob);
-
-        if (!result.transcription) {
-          throw new Error('Transcription was empty. The audio might have been too quiet or unrecognized.');
-        }
-
-        setTranscript(result.transcription);
-        setSummary(result.summary || '');
-
-        const newSummary: MeetingSummary = {
-          id: Date.now().toString(),
-          date: new Date().toISOString(),
-          duration,
-          summary: result.summary || '',
-          transcript: result.transcription,
-          highlights: [...highlights]
-        };
-        setSummaryHistory(updatedHistory => [newSummary, ...updatedHistory]);
-        saveMeetingToDatabase(newSummary);
-        setActiveSession(newSummary); // Keep current session visible on dashboard
-        setHighlights([]); // Clear after saving
-
-        // Auto-generate PM outputs from summary
-        if (result.summary) {
-          generatePMOutputs(result.summary);
-        }
-      } catch (err) {
-        console.error('Transcription error:', err);
-        setError(err instanceof Error ? err.message : 'Failed to process audio');
-      } finally {
-        setTranscribing(false);
-      }
-    } else {
-      setError('No audio data was recorded. Please try again.');
-    }
-  };
+  }, [audioURL, isRecording]);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Gemini Inline API payload limit is 20MB. 
-    // A heavily compressed 2-hour audio file is ~14MB.
-    if (file.size > 20 * 1024 * 1024) {
-      setError("File exceeds 20MB limit. For 2-hour meetings, please record directly in the app or heavily compress your audio file before uploading.");
+    if (file.size > 19 * 1024 * 1024) {
+      setError("File exceeds Gemini's 20MB limit.");
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
 
     try {
-      if (!apiStatus.huggingface) {
-        throw new Error('Hugging Face API key is missing. Please check your .env file.');
-      }
-      if (!apiStatus.gemini) {
-        throw new Error('Google Gemini API key is missing. Please check your .env file.');
-      }
-
       setTranscribing(true);
       setError(null);
-
       const result = await transcribeAndSummarizeWithGemini(file);
-
-      if (!result.transcription) {
-        throw new Error('Transcription was empty. Incompatible audio/video format or silent file.');
-      }
-      setTranscript(result.transcription);
-      setSummary(result.summary || '');
-
-      const newSummary: MeetingSummary = {
-        id: Date.now().toString(),
-        date: new Date().toISOString(),
-        duration: 0,
-        summary: result.summary || '',
-        transcript: result.transcription
-      };
-      setSummaryHistory(updatedHistory => [newSummary, ...updatedHistory]);
-      saveMeetingToDatabase(newSummary);
-      setActiveSession(newSummary); // Keep visible
-
-      // Auto-generate PM outputs from summary
-      if (result.summary) {
-        generatePMOutputs(result.summary);
-      }
-
-      // Clear file input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
+      
+      if (result.transcription) {
+        setTranscript(result.transcription);
+        setSummary(result.summary || '');
+        const newSummary: MeetingSummary = {
+          id: Date.now().toString(),
+          date: new Date().toISOString(),
+          duration: 0,
+          summary: result.summary || '',
+          transcript: result.transcription
+        };
+        setSummaryHistory(prev => [newSummary, ...prev]);
+        saveMeetingToDatabase(newSummary);
+        setActiveSession(newSummary);
+        if (result.summary) {
+          generatePMOutputs(result.summary);
+        }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to process uploaded file');
+      setError(err instanceof Error ? err.message : 'Failed to process file');
     } finally {
       setTranscribing(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
-  const handleSignOut = async () => {
-    if (isRecording) {
-      stopRecording();
-    }
-    await supabase.auth.signOut();
-  };
 
 
 
@@ -825,7 +789,7 @@ interface GoogleCalendarEvent {
       if (link) details.link = link;
 
       // Extract date and time - looking for common invite patterns
-      // Handles: "Wednesday, March 6 · 2:00 – 3:00pm", "2024-03-06 14:00", etc.
+      // Handles: "Wednesday, March 6 ┬╖ 2:00 ΓÇô 3:00pm", "2024-03-06 14:00", etc.
       const datePatterns = [
         /([A-Za-z]+, [A-Za-z]+ \d{1,2}(?:, \d{4})?)/, // "Wednesday, March 6, 2024"
         /(\d{4}-\d{2}-\d{2})/, // "2024-03-06"
@@ -833,8 +797,8 @@ interface GoogleCalendarEvent {
       ];
 
       const timePatterns = [
-        /([0-9]{1,2}:[0-9]{2})\s*(?:am|pm)?\s*[–-]\s*([0-9]{1,2}:[0-9]{2})\s*(am|pm)/i, // "2:00 - 3:00pm"
-        /([0-9]{1,2}:[0-9]{2})\s*(am|pm)\s*[–-]\s*([0-9]{1,2}:[0-9]{2})\s*(am|pm)/i, // "2:00pm - 3:00pm"
+        /([0-9]{1,2}:[0-9]{2})\s*(?:am|pm)?\s*[ΓÇô-]\s*([0-9]{1,2}:[0-9]{2})\s*(am|pm)/i, // "2:00 - 3:00pm"
+        /([0-9]{1,2}:[0-9]{2})\s*(am|pm)\s*[ΓÇô-]\s*([0-9]{1,2}:[0-9]{2})\s*(am|pm)/i, // "2:00pm - 3:00pm"
         /([0-9]{1,2}:[0-9]{2})/ // Fallback for single time
       ];
 
@@ -890,12 +854,19 @@ interface GoogleCalendarEvent {
           duration: meeting.duration,
           transcript: meeting.transcript,
           summary: meeting.summary || '',
-          is_calendar: isCalendar
+          is_calendar: isCalendar,
+          type: isCalendar ? 'calendar' : 'recorded',
+          link: meeting.link,
+          platform: meeting.platform
         }
       ]);
 
-      // Update local history for sync
-      setSummaryHistory(prev => [meeting, ...prev]);
+      // Update local state for immediate feedback
+      if (isCalendar) {
+        setCalendarMeetings(prev => [meeting, ...prev]);
+      } else {
+        setSummaryHistory(prev => [meeting, ...prev]);
+      }
     } catch (err) {
       console.error('Error saving to DB:', err);
     }
@@ -925,12 +896,14 @@ interface GoogleCalendarEvent {
         date: meetingDate.toISOString(),
         duration: meetingDetails.duration ? parseInt(meetingDetails.duration) : 60,
         summary: `${meetingDetails.platform} Meeting`,
-        transcript: `Link: ${meetingDetails.link}\nDate: ${meetingDetails.date || 'Today'}\nTime: ${meetingDetails.time || 'TBD'}\nDuration: ${meetingDetails.duration || '60 min'}\nTimeZone: ${meetingDetails.timezone || ''}`
+        transcript: `Link: ${meetingDetails.link}\nDate: ${meetingDetails.date || 'Today'}\nTime: ${meetingDetails.time || 'TBD'}\nDuration: ${meetingDetails.duration || '60 min'}\nTimeZone: ${meetingDetails.timezone || ''}`,
+        platform: meetingDetails.platform,
+        link: meetingDetails.link, // Set link
+        is_calendar: true, // Mark as calendar meeting
+        type: 'calendar' // Set type
       };
 
-      setCalendarMeetings(prev => [newMeeting, ...prev]);
       saveMeetingToDatabase(newMeeting, true);
-
       setMeetingDetails({});
       setMeetingLink('');
       setError(null);
@@ -942,10 +915,10 @@ interface GoogleCalendarEvent {
   const allMeetings = [...summaryHistory, ...calendarMeetings];
   allMeetings.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-  // Dashboard list should ONLY show scheduled meetings (calendar events)
+  // Dashboard list should ONLY show scheduled meetings (calendar events) for the SELECTED date
   const meetingsToDisplay = selectedDate
     ? calendarMeetings.filter(m => new Date(m.date).toDateString() === selectedDate.toDateString())
-    : calendarMeetings;
+    : []; // Show nothing if no date is selected
 
   const groupedMeetings = meetingsToDisplay.reduce((acc, meeting) => {
     const date = new Date(meeting.date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
@@ -1006,7 +979,7 @@ interface GoogleCalendarEvent {
       </div>` : ''}
 
       <div style="margin-top: 50px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #999; text-align: center;">
-        © 2026 3.0Labs AI Meeting Intelligence. All rights reserved.
+        ┬⌐ 2026 3.0Labs AI Meeting Intelligence. All rights reserved.
       </div>
     `;
 
@@ -1024,25 +997,30 @@ interface GoogleCalendarEvent {
   // Add this function to remove a meeting by id
   const removeMeeting = async (id: string) => {
     try {
-      await supabase.from('meetings').delete().eq('id', id);
+      // Get fresh user email to be certain
+      let email = userEmail;
+      if (!email) {
+        const { data: { user } } = await supabase.auth.getUser();
+        email = user?.email || '';
+      }
+
+      const { error } = await supabase
+        .from('meetings')
+        .update({ is_hidden: true })
+        .eq('id', id);
+      
+      if (error) throw error;
+      // Update local state
       setCalendarMeetings(prev => prev.filter(m => m.id !== id));
       setSummaryHistory(prev => prev.filter(m => m.id !== id));
+      
+      console.log(`Successfully deleted meeting ${id} for ${email}`);
     } catch (err) {
       console.error('Error removing meeting:', err);
+      setError('Failed to delete meeting permanently. Please try again.');
     }
   };
 
-  // Remove very old meetings automatically (older than 2 days)
-  useEffect(() => {
-    setCalendarMeetings(prev =>
-      prev.filter(m => {
-        const meetingDate = new Date(m.date);
-        const twoDaysAgo = new Date();
-        twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-        return meetingDate >= twoDaysAgo;
-      })
-    );
-  }, [calendarMeetings.length]);
 
   // Load meetings from Supabase when userDetails are ready
   useEffect(() => {
@@ -1053,6 +1031,7 @@ interface GoogleCalendarEvent {
           .from('meetings')
           .select('*')
           .eq('user_email', user.email)
+          .eq('is_hidden', false)
           .order('date', { ascending: false });
 
         if (!error && data) {
@@ -1075,18 +1054,7 @@ interface GoogleCalendarEvent {
         </div>
       </div>
 
-      {/* Roaming Spy Robot Background */}
-      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <div className="absolute w-24 h-16 animate-robot-roam opacity-20">
-          <div className="w-16 h-10 bg-[#1a1c24] border-b-2 border-red-500/50 rounded-b-2xl shadow-[0_5px_15px_rgba(239,68,68,0.2)] flex items-center justify-center relative">
-            <div className="flex gap-2">
-              <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-robot-blink"></div>
-              <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-robot-blink"></div>
-            </div>
-            <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-red-500/30 animate-scanner-red"></div>
-          </div>
-        </div>
-      </div>
+      {/* Background branding elements removed per user request */}
 
       {sidebarOpen && (
         <div
@@ -1095,120 +1063,20 @@ interface GoogleCalendarEvent {
         />
       )}
 
-      {/* Sidebar */}
-      <aside className={`
-        fixed inset-y-0 left-0 z-40 w-72 bg-[#0B0C10] border-r border-white/10 transform transition-transform duration-300 ease-in-out flex flex-col pt-6 pb-4
-        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 md:static md:h-full lg:w-80
-      `}>
-        <div className="flex items-center justify-between px-6 mb-8 relative">
-          <img src="/logo.png" alt="3.0Labs" className="h-10 w-auto object-contain" />
-          <button className="md:hidden text-gray-400 hover:text-white" onClick={() => setSidebarOpen(false)}>&times;</button>
-
-          {/* Tiny Sidebar Robot */}
-          <div className="absolute -top-4 -right-2 w-8 h-8 opacity-40 group-hover:opacity-100 transition-opacity">
-            <div className="w-6 h-4 bg-[#1a1c24] border-b border-red-500/50 rounded-b-lg flex items-center justify-center relative">
-              <div className="flex gap-1">
-                <div className="w-0.5 h-0.5 bg-red-500 rounded-full"></div>
-                <div className="w-0.5 h-0.5 bg-red-500 rounded-full"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="mb-6 px-6">
-          <button
-            onClick={() => isRecording ? stopRecording() : startRecording('microphone')}
-            className={`w-full flex items-center justify-center space-x-2 py-3 px-4 rounded-xl font-medium transition-all duration-300 ${isRecording && recordingMode === 'microphone'
-              ? 'bg-red-500/10 text-red-500 border border-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.2)]'
-              : 'bg-gradient-to-r from-red-600 to-red-800 text-white hover:from-red-500 hover:to-red-700 shadow-[0_0_20px_rgba(239,68,68,0.3)] hover:shadow-[0_0_30px_rgba(239,68,68,0.5)] border border-white/10'
-              }`}
-            disabled={!audioSupported || !apiStatus.gemini || !apiStatus.huggingface || (isRecording && recordingMode !== 'microphone')}
-          >
-            <Mic className="w-5 h-5" />
-            <span>{isRecording && recordingMode === 'microphone' ? 'Stop Recording' : 'New Meeting'}</span>
-          </button>
-        </div>
-
-        <div className="px-6 mb-6">
-          <div className="flex flex-col mb-4">
-            <div className="font-semibold text-white">{userName || "Your Name"}</div>
-            <div className="text-xs text-gray-400">{userEmail || "your@email.com"}</div>
-          </div>
-        </div>
-
-        <nav className="flex-1 overflow-y-auto custom-scrollbar py-2">
-          <ul className="space-y-1 px-3">
-            <li className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">Meetings</li>
-            <li>
-              <Link to="/summarizer" className={`${location.pathname === '/summarizer' ? 'bg-white/10 text-white' : 'text-gray-300'} hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors flex items-center`}>
-                <Home className="w-5 h-5 mr-3 opacity-80" /> Dashboard
-              </Link>
-            </li>
-            <li>
-              <Link to="/history" className={`${location.pathname === '/history' ? 'bg-white/10 text-white' : 'text-gray-300'} hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors flex items-center`}>
-                <History className="w-5 h-5 mr-3 opacity-80" /> Meeting History
-              </Link>
-            </li>
-            <li>
-              <Link to="/ai-chat" className={`${location.pathname === '/ai-chat' ? 'bg-red-600/10 text-red-500' : 'text-gray-300'} hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors flex items-center`}>
-                <Brain className="w-5 h-5 mr-3 opacity-80" /> 3.0 Agent
-              </Link>
-            </li>
-            <li className="pt-4 px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">PM Agent</li>
-            <li>
-              <Link to="/pm-dashboard" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                <Sparkles className="w-5 h-5 mr-3 text-red-500 animate-pulse" /> PM Dashboard
-              </Link>
-            </li>
-            <li>
-              <Link to="/prd-generator" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                <FileText className="w-5 h-5 mr-3 opacity-80" /> PRD Generator
-              </Link>
-            </li>
-            <li>
-              <Link to="/user-stories" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                <Users className="w-5 h-5 mr-3 opacity-80" /> User Stories
-              </Link>
-            </li>
-            <li>
-              <Link to="/sprint-planner" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                <CalendarIcon className="w-5 h-5 mr-3 opacity-80" /> Sprint Planner
-              </Link>
-            </li>
-          </ul>
-        </nav>
-        <div className="px-6 space-y-2">
-          {/* Theme Toggle */}
-          <button
-            onClick={toggleTheme}
-            className="flex items-center w-full text-gray-400 hover:text-red-400 hover:bg-red-500/10 px-3 py-2.5 rounded-xl transition-all group"
-          >
-            {theme === 'dark' ? (
-              <Sun className="w-5 h-5 mr-3 group-hover:rotate-180 transition-transform duration-500" />
-            ) : (
-              <Moon className="w-5 h-5 mr-3 group-hover:-rotate-12 transition-transform duration-500" />
-            )}
-            {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
-          </button>
-          <button
-            onClick={handleSignOut}
-            className="flex items-center w-full text-gray-400 hover:text-red-400 hover:bg-red-500/10 px-3 py-2.5 rounded-xl transition-colors"
-          >
-            <LogOut className="w-5 h-5 mr-3" /> Sign Out
-          </button>
-        </div>
-      </aside >
-      <button
-        className="md:hidden fixed top-4 right-4 z-50 bg-[#0B0C10] border border-white/10 rounded-full p-2 shadow-lg"
-        onClick={() => setSidebarOpen(!sidebarOpen)}
-        aria-label="Open menu"
+      {/* Sidebar is now handled by AuthenticatedLayout */}
+      {/* The button below was likely part of a previous sidebar implementation and is now orphaned. Removing it. */}
+      {/* <button
+        className="md:hidden fixed top-4 left-4 z-50 text-gray-400 hover:text-white p-2 hover:bg-white/5 rounded-lg transition-all"
+        onClick={() => setSidebarOpen(true)}
+        aria-label="Open Menu"
       >
-        <Menu className="w-6 h-6 text-white" />
-      </button>
+        <Menu className="w-6 h-6" />
+      </button> */}
       <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
         {/* Ambient orbs - RED THEME */}
-        <div className="absolute top-0 right-0 -mr-20 -mt-20 w-96 h-96 bg-red-600/20 rounded-full blur-[120px] animate-float pointer-events-none"></div>
-        <div className="absolute bottom-0 left-0 -ml-20 -mb-20 w-80 h-80 bg-red-900/20 rounded-full blur-[100px] animate-float-slow pointer-events-none"></div>
-        <div className="absolute top-1/3 right-1/4 w-60 h-60 bg-red-500/10 rounded-full blur-[80px] animate-orb-pulse pointer-events-none"></div>
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-red-600/10 rounded-full blur-[120px] animate-pulse-slow"></div>
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-red-900/10 rounded-full blur-[120px] animate-pulse-slow [animation-delay:2s]"></div>
+        <div className="hidden sm:block absolute top-1/3 right-1/4 w-40 md:w-60 h-40 md:h-60 bg-red-500/10 rounded-full blur-[60px] md:blur-[80px] animate-orb-pulse pointer-events-none"></div>
         <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-red-500 to-transparent animate-shimmer z-20"></div>
 
         {/* Mobile Sidebar Overlay */}
@@ -1219,7 +1087,7 @@ interface GoogleCalendarEvent {
           />
         )}
 
-        <header className="flex flex-col lg:flex-row items-center justify-between px-4 md:px-8 py-4 bg-[#0B0C10]/80 backdrop-blur-xl border-b border-white/5 z-30 flex-shrink-0 gap-4">
+        <header className="flex flex-col lg:flex-row items-center justify-between px-3 sm:px-4 md:px-8 py-3 sm:py-4 bg-[#0B0C10]/80 backdrop-blur-xl border-b border-red-500/10 z-30 flex-shrink-0 gap-2 sm:gap-4">
           <div className="flex items-center justify-between w-full lg:w-auto gap-4">
             <div className="flex items-center gap-4">
               <button
@@ -1229,11 +1097,17 @@ interface GoogleCalendarEvent {
               >
                 <Menu className="w-6 h-6" />
               </button>
-              <div className="flex items-center gap-3">
-                <img src="/logo.png" alt="3.0Labs" className="h-8 w-auto object-contain" />
-                <span className="text-gray-400 font-medium text-lg">/</span>
-                <h1 className="text-lg md:text-xl font-bold text-white tracking-tight">Meetings</h1>
-              </div>
+                      <div className="flex items-center gap-3">
+            <button 
+              onClick={handleLogoClick}
+              className="block transition-transform hover:scale-105 active:scale-95 focus:outline-none"
+              title={mainView === 'agent' ? "Reset Agent Session" : "Go to Dashboard"}
+            >
+              <img src="/logo.png" alt="3.0Labs" className="h-8 w-auto object-contain" />
+            </button>
+            <span className="text-gray-400 font-medium text-lg">/</span>
+            <h1 className="text-lg md:text-xl font-bold text-white tracking-tight">Summarizer</h1>
+          </div>
             </div>
             
             <div className="flex lg:hidden items-center gap-2">
@@ -1246,77 +1120,67 @@ interface GoogleCalendarEvent {
             </div>
           </div>
 
-          {/* Recording Controls */}
+          {/* Quick actions in header */}
           <div className="flex flex-wrap items-center gap-2 sm:gap-3 z-40">
             <button
-              className={`px-4 py-2 font-bold rounded-xl transition-all flex items-center shadow-lg group active:scale-95 text-xs md:text-sm ${isRecording && recordingMode === 'microphone'
-                ? 'bg-red-500 text-white animate-pulse border border-red-400'
-                : 'bg-white/5 text-white hover:bg-white/10 border border-white/10'
-                }`}
-              onClick={() => isRecording ? stopRecording() : startRecording('microphone')}
-              disabled={!audioSupported || !apiStatus.gemini || !apiStatus.huggingface || (isRecording && recordingMode !== 'microphone')}
+              onClick={() => setMainView('agent')}
+              className={`px-4 py-2 font-bold rounded-xl transition-all flex items-center shadow-lg active:scale-95 text-xs md:text-sm border ${mainView === 'agent' ? 'bg-red-600 text-white border-red-500' : 'bg-white/5 text-white hover:bg-white/10 border-white/10'}`}
             >
-              <Mic className="w-3.5 h-3.5 mr-2 text-red-500" />
-              {isRecording && recordingMode === 'microphone' ? "Stop" : "Record Mic"}
+              <span className="w-2 h-2 bg-red-400 rounded-full mr-2 animate-pulse" />
+              3.0 Agent
             </button>
-
-            <button
-              className={`px-4 py-2 font-bold rounded-xl transition-all flex items-center shadow-lg group active:scale-95 text-xs md:text-sm ${isRecording && recordingMode === 'tab'
-                ? 'bg-red-600 text-white animate-pulse border border-red-500'
-                : 'bg-white/5 text-white hover:bg-white/10 border border-white/10'
-                }`}
-              onClick={() => isRecording ? stopRecording() : startRecording('tab')}
-              disabled={!audioSupported || !apiStatus.gemini || !apiStatus.huggingface || (isRecording && recordingMode !== 'tab')}
-            >
-              <Monitor className="w-3.5 h-3.5 mr-2 text-red-500" />
-              {isRecording && recordingMode === 'tab' ? "Stop" : "Capture Tab"}
-            </button>
-
-            <input
-              type="file"
-              accept="audio/*,video/*"
-              className="hidden"
-              ref={fileInputRef}
-              onChange={handleFileUpload}
-            />
-            <button
-              className="px-4 py-2 bg-white/5 text-white font-bold rounded-xl hover:bg-white/10 border border-white/10 transition-all flex items-center shadow-lg active:scale-95 text-xs md:text-sm"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isRecording || !apiStatus.gemini || !apiStatus.huggingface}
-            >
-              <Upload className="w-3.5 h-3.5 mr-2 text-red-500" />
-              Upload
-            </button>
-
             {GOOGLE_CLIENT_ID_AVAILABLE && (
               <CalendarSyncButton
                 onSyncSuccess={handleCalendarSyncSuccess}
                 onSyncError={handleCalendarSyncError}
                 isSyncing={isSyncingCalendar}
                 disabled={isSyncingCalendar}
-                className={`px-4 py-2 font-bold rounded-xl transition-all flex items-center shadow-lg active:scale-95 text-xs md:text-sm border ${isCalendarConnected
-                  ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
-                  : 'bg-white/5 text-white border-white/10'
-                  }`}
+                className={`px-4 py-2 font-bold rounded-xl transition-all flex items-center shadow-lg active:scale-95 text-xs md:text-sm border ${isCalendarConnected ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' : 'bg-white/5 text-white border-white/10 hover:bg-white/10'}`}
               >
-                <CalendarIcon className="w-3.5 h-3.5 mr-2 text-blue-400" />
-                {isCalendarConnected ? 'Ref' : 'Sync'}
+                <CalendarIcon className={`w-3.5 h-3.5 mr-2 ${isCalendarConnected ? 'text-blue-400' : 'text-gray-400'}`} />
+                {isCalendarConnected ? 'Sync Calendar' : 'Connect Calendar'}
               </CalendarSyncButton>
             )}
+            <input type="file" accept="audio/*,video/*" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
           </div>
 
             <div className="flex items-center gap-4">
               <div className="hidden sm:flex flex-col items-end">
-                <span className="text-[10px] font-black text-red-500 uppercase tracking-widest">Scheduled Meetings</span>
+                <span 
+                  className="text-[10px] font-black text-red-500 uppercase tracking-widest cursor-pointer hover:text-red-400 transition-colors"
+                  onClick={() => setSelectedDate(null)}
+                >
+                  Scheduled Meetings
+                </span>
                 <span className="text-white font-bold text-sm flex items-center gap-2">
-                  <CalendarIcon className="w-3.5 h-3.5 text-red-500" />
+                  <CalendarIcon className="w-3.5 h-3.5 text-gray-400" />
                   {calendarMeetings.length} Upcoming
                 </span>
               </div>
-              <nav className="flex items-center gap-4 text-gray-400 font-bold text-[10px] uppercase tracking-widest bg-white/5 px-3 py-1.5 rounded-full border border-white/5">
-                <span className="text-red-500">Meetings</span>
+              <nav className="flex items-center gap-3 text-gray-400 font-bold text-[10px] uppercase tracking-widest bg-white/5 px-3 py-1.5 rounded-full border border-white/5">
+                <span
+                  className={`hover:text-white cursor-pointer transition-colors ${mainView === 'meetings' && !selectedDate ? 'text-red-500' : ''}`}
+                  onClick={() => { setMainView('meetings'); setSelectedDate(null); }}
+                >
+                  Meetings
+                </span>
                 <span className="opacity-30">/</span>
-                <span className="hover:text-white cursor-pointer transition-colors" onClick={() => setSelectedDate(new Date())}>Calendar</span>
+                <span
+                  className={`hover:text-white cursor-pointer transition-colors ${mainView === 'meetings' && selectedDate ? 'text-red-500' : ''}`}
+                  onClick={() => { setMainView('meetings'); setSelectedDate(new Date()); }}
+                >
+                  Calendar
+                </span>
+                <span className="opacity-30">/</span>
+                <span
+                  className={`hover:text-white cursor-pointer transition-colors flex items-center gap-1 ${mainView === 'agent' ? 'text-red-500' : ''}`}
+                  onClick={() => setMainView('agent')}
+                >
+                  {Object.values(activeBots).some(b => ['pending_join','joining','in_call'].includes(b.status)) && (
+                    <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse inline-block" />
+                  )}
+                  3.0 Agent
+                </span>
               </nav>
               <button
                 onClick={() => _setShowSettings(true)}
@@ -1327,7 +1191,7 @@ interface GoogleCalendarEvent {
             </div>
         </header>
         <div className="flex flex-1 flex-col xl:flex-row relative overflow-hidden h-full">
-          <section className="flex-1 px-4 md:px-10 py-8 overflow-y-auto z-10">
+          <section className="flex-1 px-3 sm:px-4 md:px-8 lg:px-10 py-4 sm:py-6 md:py-8 overflow-y-auto z-10">
             {error && (
               <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl flex items-center justify-between">
                 <span>{error}</span>
@@ -1335,6 +1199,7 @@ interface GoogleCalendarEvent {
               </div>
             )}
 
+            {mainView === 'agent' && (<>
             {transcribing && (
               <div className="mb-8 p-8 bg-red-500/10 border border-red-500/30 rounded-2xl flex flex-col items-center justify-center space-y-4 animate-pulse">
                 <div className="w-12 h-12 border-4 border-red-500 border-t-transparent rounded-full animate-spin"></div>
@@ -1342,7 +1207,61 @@ interface GoogleCalendarEvent {
                 <div className="text-gray-400 text-sm">This can take a minute for longer recordings.</div>
               </div>
             )}
-            <div className="mb-8 p-6 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl shadow-xl animate-fade-in-up hover-glow-red">
+            {/* 3.0 Agent Section Header */}
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-9 h-9 rounded-full bg-red-600 flex items-center justify-center text-white font-bold text-sm shadow-lg shadow-red-900/30">3.0</div>
+              <div>
+                <h2 className="text-lg font-bold text-white tracking-tight">3.0 Agent</h2>
+                <p className="text-xs text-gray-500">AI-powered meeting recorder & PM assistant</p>
+              </div>
+              <div className="ml-auto flex flex-wrap gap-1.5 sm:gap-2">
+                <button
+                  className={`px-2 sm:px-3 py-1.5 font-bold rounded-xl transition-all flex items-center shadow-lg active:scale-95 text-xs border ${isRecording && recordingMode === 'microphone' ? 'bg-red-500 text-white border-red-400 animate-pulse' : 'bg-white/5 text-white hover:bg-white/10 border-white/10'}`}
+                  onClick={() => isRecording ? handleStopRecording() : handleStartRecording('microphone')}
+                  disabled={!audioSupported || !apiStatus.gemini || (isRecording && recordingMode !== 'microphone')}
+                >
+                  <Mic className="w-3 h-3 sm:mr-1.5 text-red-400" />
+                  <span className="hidden sm:inline">{isRecording && recordingMode === 'microphone' ? 'Stop' : 'Mic'}</span>
+                </button>
+                <button
+                  className={`px-2 sm:px-3 py-1.5 font-bold rounded-xl transition-all flex items-center shadow-lg active:scale-95 text-xs border ${isRecording && recordingMode === 'tab' ? 'bg-red-600 text-white border-red-500 animate-pulse' : 'bg-white/5 text-white hover:bg-white/10 border-white/10'}`}
+                  onClick={() => isRecording ? handleStopRecording() : handleStartRecording('tab')}
+                  disabled={!audioSupported || !apiStatus.gemini || (isRecording && recordingMode !== 'tab')}
+                >
+                  <Monitor className="w-3 h-3 sm:mr-1.5 text-red-400" />
+                  <span className="hidden sm:inline">{isRecording && recordingMode === 'tab' ? 'Stop' : 'Tab'}</span>
+                </button>
+                <button
+                  className="px-2 sm:px-3 py-1.5 bg-white/5 text-white font-bold rounded-xl hover:bg-white/10 border border-white/10 transition-all flex items-center active:scale-95 text-xs"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isRecording || !apiStatus.gemini}
+                >
+                  <Upload className="w-3 h-3 sm:mr-1.5 text-red-400" />
+                  <span className="hidden sm:inline">Upload</span>
+                </button>
+              </div>
+            </div>
+            {/* Welcome Back Banner */}
+            {welcomeBack.show && (
+              <div className="mb-6 p-5 bg-gradient-to-r from-emerald-500/10 to-red-500/10 border border-emerald-500/30 rounded-2xl flex items-start gap-4 animate-fade-in-up shadow-[0_0_25px_rgba(16,185,129,0.1)]">
+                <div className="w-11 h-11 rounded-full bg-gradient-to-br from-emerald-500 to-red-600 flex items-center justify-center text-white font-bold text-sm shadow-lg shrink-0">
+                  3.0
+                </div>
+                <div className="flex-1">
+                  <p className="text-white font-bold text-base mb-0.5">Welcome back! 👋 Your meeting just ended.</p>
+                  <p className="text-gray-400 text-sm leading-relaxed">
+                    I captured everything. Generating your summary, PRD, user stories, and sprint plan right now — check below in a moment!
+                  </p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                    <span className="text-emerald-400 text-xs font-semibold">AI is processing your meeting...</span>
+                  </div>
+                </div>
+                <button onClick={() => setWelcomeBack({ show: false })} className="text-gray-500 hover:text-white transition-colors text-lg shrink-0">&times;</button>
+              </div>
+            )}
+
+            <div className="mb-6 p-6 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl shadow-xl animate-fade-in-up hover-glow-red">
               <div className="font-semibold mb-4 text-white text-lg tracking-tight">Extract Meeting Details from Link</div>
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
                 <input
@@ -1360,31 +1279,51 @@ interface GoogleCalendarEvent {
                 </button>
               </div>
               {meetingDetails.platform && (
-                <div className="mt-6 text-gray-300 p-4 bg-black/20 rounded-xl border border-white/5 space-y-2">
-                  <div className="flex items-center">
-                    <strong className="text-gray-400 w-24">Platform:</strong>
+                <div className="mt-6 text-gray-300 p-3 sm:p-4 bg-black/20 rounded-xl border border-white/5 space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-0">
+                    <strong className="text-gray-400 w-24 flex-shrink-0 text-sm">Platform:</strong>
                     <span className="text-white">{meetingDetails.platform}</span>
                   </div>
-                  {meetingDetails.link && <div className="flex items-start"><strong className="text-gray-400 w-24 flex-shrink-0">Link:</strong> <a href={meetingDetails.link} target="_blank" rel="noopener noreferrer" className="text-red-400 hover:text-red-300 break-all">{meetingDetails.link}</a></div>}
-                  {meetingDetails.date && <div className="flex items-center"><strong className="text-gray-400 w-24">Date:</strong> <span className="text-white">{meetingDetails.date}</span></div>}
-                  {meetingDetails.time && <div className="flex items-center"><strong className="text-gray-400 w-24">Time:</strong> <span className="text-white">{meetingDetails.time}</span></div>}
-                  {meetingDetails.duration && <div className="flex items-center"><strong className="text-gray-400 w-24">Duration:</strong> <span className="text-white">{meetingDetails.duration}</span></div>}
-                  {meetingDetails.timezone && <div className="flex items-center"><strong className="text-gray-400 w-24">Time Zone:</strong> <span className="text-white">{meetingDetails.timezone}</span></div>}
+                  {meetingDetails.link && <div className="flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-0"><strong className="text-gray-400 w-24 flex-shrink-0 text-sm">Link:</strong> <a href={meetingDetails.link} target="_blank" rel="noopener noreferrer" className="text-red-400 hover:text-red-300 break-all text-sm">{meetingDetails.link}</a></div>}
+                  {meetingDetails.date && <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-0"><strong className="text-gray-400 w-24 flex-shrink-0 text-sm">Date:</strong> <span className="text-white">{meetingDetails.date}</span></div>}
+                  {meetingDetails.time && <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-0"><strong className="text-gray-400 w-24 flex-shrink-0 text-sm">Time:</strong> <span className="text-white">{meetingDetails.time}</span></div>}
+                  {meetingDetails.duration && <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-0"><strong className="text-gray-400 w-24 flex-shrink-0 text-sm">Duration:</strong> <span className="text-white">{meetingDetails.duration}</span></div>}
+                  {meetingDetails.timezone && <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-0"><strong className="text-gray-400 w-24 flex-shrink-0 text-sm">Time Zone:</strong> <span className="text-white">{meetingDetails.timezone}</span></div>}
+                   <div className="mt-6 pt-6 border-t border-white/10">
+                    <div className="flex items-start gap-4 mb-6 animate-fade-in">
+                      <div className="w-10 h-10 rounded-full bg-red-600 flex items-center justify-center text-white font-bold shadow-lg shadow-red-900/20 shrink-0">
+                        3.0
+                      </div>
+                      <div className="flex-1 bg-white/5 border border-white/10 rounded-2xl p-4 rounded-tl-none">
+                        <p className="text-white font-medium mb-1">Hello, I am 3.0 labs bot.</p>
+                        <p className="text-gray-400 text-sm">I've extracted the details for your {meetingDetails.platform} meeting. Should I join and record it for you?</p>
+                      </div>
+                    </div>
 
-                  <div className="mt-6 pt-4 border-t border-white/5 flex gap-3">
-                    <button
-                      onClick={handleAddExtractedMeeting}
-                      className="px-6 py-2.5 bg-emerald-600 text-white font-semibold rounded-xl hover:bg-emerald-500 shadow-lg transition-all flex items-center gap-2"
-                    >
-                      <CheckCircle className="w-4 h-4" />
-                      Add to Meeting
-                    </button>
-                    <button
-                      onClick={() => setMeetingDetails({})}
-                      className="px-6 py-2.5 bg-white/5 text-gray-400 font-medium rounded-xl hover:bg-white/10 transition-all"
-                    >
-                      Cancel
-                    </button>
+                    <div className="flex flex-col sm:flex-row flex-wrap gap-2 sm:gap-3 justify-end">
+                      <button
+                        onClick={() => markMoment('insight')}
+                        disabled={!isRecording}
+                        className="px-4 sm:px-6 py-2 sm:py-2.5 bg-white/5 text-gray-400 font-medium rounded-xl hover:bg-white/10 transition-all border border-white/5 text-sm"
+                      >
+                        No, skip for now
+                      </button>
+                      <button
+                        onClick={handleAddExtractedMeeting}
+                        className="px-4 sm:px-6 py-2 sm:py-2.5 bg-emerald-600/20 text-emerald-400 font-semibold rounded-xl hover:bg-emerald-600/30 border border-emerald-500/20 transition-all flex items-center justify-center gap-2 text-sm"
+                      >
+                        <CheckCircle className="w-4 h-4" />
+                        Just add to list
+                      </button>
+                      <button
+                        onClick={handleJoinMeetingBot}
+                        disabled={!meetingDetails.link || transcribing || !!Object.values(activeBots).find(b => b.meeting_url === meetingDetails.link && ['pending_join','joining','in_call'].includes(b.status))}
+                        className="px-6 sm:px-8 py-2 sm:py-2.5 bg-red-600 text-white font-bold rounded-xl hover:bg-red-500 shadow-[0_0_20px_rgba(239,68,68,0.4)] transition-all flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95 text-sm"
+                      >
+                        {transcribing ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Video className="w-4 h-4" />}
+                        {transcribing ? 'Sending...' : 'Yes, Join Meeting'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1392,58 +1331,141 @@ interface GoogleCalendarEvent {
                 <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm">{meetingDetails.error}</div>
               )}
             </div>
-            {isRecording && (
-              <div className="mb-8 p-6 bg-white/5 backdrop-blur-xl border border-red-500/30 rounded-2xl flex items-center space-x-6 shadow-[0_0_30px_rgba(239,68,68,0.1)] relative overflow-hidden animate-scale-in animate-border-glow">
-                <div className="absolute inset-0 bg-red-500/5 animate-pulse"></div>
-                <div className="flex items-center space-x-3 relative z-10 w-full justify-between">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
-                      <Clock className="w-5 h-5 text-red-400" />
+
+            {/* Active Bot Status Cards */}
+            {Object.values(activeBots).map(bot => {
+              const statusConfig: Record<string, { label: string; headline: string; sub: string; color: string; glow: string; pulse: boolean }> = {
+                pending_join: {
+                  label: 'CONNECTING',
+                  headline: '3.0 Agent is suiting up...',
+                  sub: 'Authenticating and preparing to enter your meeting. This takes a few seconds.',
+                  color: 'border-yellow-500/30 bg-yellow-500/5',
+                  glow: 'shadow-[0_0_20px_rgba(234,179,8,0.1)]',
+                  pulse: true,
+                },
+                joining: {
+                  label: 'JOINING',
+                  headline: 'Knocking on the meeting door 🚪',
+                  sub: 'Your AI agent is entering the meeting room. It will appear as a participant shortly.',
+                  color: 'border-blue-500/30 bg-blue-500/5',
+                  glow: 'shadow-[0_0_20px_rgba(59,130,246,0.1)]',
+                  pulse: true,
+                },
+                in_call: {
+                  label: '● LIVE',
+                  headline: '3.0 Agent is listening & taking notes 🎙️',
+                  sub: 'Every word is being captured. When the meeting ends, I\'ll generate your summary, PRD, and action items automatically.',
+                  color: 'border-red-500/30 bg-red-500/5',
+                  glow: 'shadow-[0_0_25px_rgba(239,68,68,0.15)]',
+                  pulse: true,
+                },
+                done: {
+                  label: 'DONE',
+                  headline: 'Meeting wrapped! Generating insights... ✨',
+                  sub: 'Fetching transcript and crafting your summary, PRD, and sprint plan. Hang tight!',
+                  color: 'border-emerald-500/30 bg-emerald-500/5',
+                  glow: 'shadow-[0_0_20px_rgba(16,185,129,0.1)]',
+                  pulse: false,
+                },
+                left: {
+                  label: 'LEFT',
+                  headline: 'Bot has left the meeting.',
+                  sub: 'Processing transcript and building your outputs now.',
+                  color: 'border-emerald-500/30 bg-emerald-500/5',
+                  glow: 'shadow-[0_0_20px_rgba(16,185,129,0.1)]',
+                  pulse: false,
+                },
+                fatal: {
+                  label: 'NOT RECORDED',
+                  headline: 'Bot timed out before being admitted ⏱️',
+                  sub: 'The bot waited in Google Meet\'s lobby but timed out (~60s) before being admitted. No audio was captured. Dismiss this and try again — this time admit the bot immediately after clicking Join.',
+                  color: 'border-orange-500/30 bg-orange-500/5',
+                  glow: 'shadow-[0_0_20px_rgba(249,115,22,0.1)]',
+                  pulse: false,
+                },
+              };
+              const cfg = statusConfig[bot.status] || statusConfig['fatal'];
+              return (
+                <div key={bot.id} className={`mb-4 p-5 backdrop-blur-xl border rounded-2xl relative overflow-hidden ${cfg.color} ${cfg.glow}`}>
+                  {cfg.pulse && <div className="absolute inset-0 opacity-30 animate-pulse bg-gradient-to-r from-transparent via-white/5 to-transparent" />}
+                  <div className="relative z-10 flex items-start gap-4">
+                    <div className="w-10 h-10 rounded-full bg-red-600 flex items-center justify-center text-white font-bold shadow-lg shrink-0">
+                      3.0
                     </div>
-                    <span className="font-medium text-white text-lg">
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <span className={`text-[10px] font-bold tracking-wider px-2 py-0.5 rounded ${cfg.pulse ? 'animate-pulse' : ''} ${
+                          bot.status === 'in_call' ? 'bg-red-500/20 text-red-400' :
+                          bot.status === 'done' || bot.status === 'left' ? 'bg-emerald-500/20 text-emerald-400' :
+                          bot.status === 'fatal' ? 'bg-orange-500/20 text-orange-400' :
+                          'bg-white/10 text-gray-300'
+                        }`}>{cfg.label}</span>
+                        {(bot.status === 'fatal' || bot.status === 'done' || bot.status === 'left') && (
+                          <button
+                            onClick={() => setActiveBots(prev => { const n = { ...prev }; delete n[bot.id]; return n; })}
+                            className="text-gray-500 hover:text-white text-xs transition-colors"
+                          >
+                            ✕ Dismiss
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-white font-semibold text-base mb-0.5">{cfg.headline}</p>
+                      <p className="text-gray-400 text-sm leading-relaxed">{cfg.sub}</p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {isRecording && (
+              <div className="mb-6 sm:mb-8 p-4 sm:p-6 bg-white/5 backdrop-blur-xl border border-red-500/30 rounded-2xl shadow-[0_0_30px_rgba(239,68,68,0.1)] relative overflow-hidden animate-scale-in animate-border-glow">
+                <div className="absolute inset-0 bg-red-500/5 animate-pulse"></div>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-0 sm:space-x-3 relative z-10 w-full sm:justify-between">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-red-500/20 flex items-center justify-center flex-shrink-0">
+                      <Clock className="w-4 h-4 sm:w-5 sm:h-5 text-red-400" />
+                    </div>
+                    <span className="font-medium text-white text-base sm:text-lg">
                       {formatDuration(duration)}
                     </span>
-                    {!isPaused && (
-                      <span className="inline-block ml-3 w-2.5 h-2.5 bg-red-500 rounded-full animate-record-pulse"></span>
-                    )}
                     {isPaused && (
-                      <span className="ml-3 text-yellow-500 font-medium text-sm px-2 py-0.5 rounded-full bg-yellow-500/20 border border-yellow-500/30">Paused</span>
+                      <span className="ml-2 sm:ml-3 text-yellow-500 font-medium text-xs sm:text-sm px-2 py-0.5 rounded-full bg-yellow-500/20 border border-yellow-500/30">Paused</span>
                     )}
                   </div>
-                  <div className="flex space-x-3">
+                  <div className="flex flex-wrap gap-2 sm:space-x-3 w-full sm:w-auto">
                     <button
                       onClick={markMoment}
-                      className="px-5 py-2.5 bg-emerald-500/20 text-emerald-400 font-medium rounded-xl hover:bg-emerald-500/30 border border-emerald-500/30 transition-all flex items-center active:scale-95 group"
+                      className="px-3 sm:px-5 py-2 sm:py-2.5 bg-emerald-500/20 text-emerald-400 font-medium rounded-xl hover:bg-emerald-500/30 border border-emerald-500/30 transition-all flex items-center active:scale-95 group text-xs sm:text-sm"
                       title="Mark Key Moment"
                     >
-                      <Sparkles className="w-4 h-4 mr-2 group-hover:rotate-12 transition-transform" />
+                      <Sparkles className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-1.5 sm:mr-2 group-hover:rotate-12 transition-transform" />
                       <span className="hidden sm:inline">Mark Moment</span>
                       <span className="sm:hidden">Mark</span>
                       {highlights.length > 0 && (
-                        <span className="ml-2 bg-emerald-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">
+                        <span className="ml-1.5 sm:ml-2 bg-emerald-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">
                           {highlights.length}
                         </span>
                       )}
                     </button>
                     <button
                       onClick={isPaused ? resumeRecording : pauseRecording}
-                      className="px-5 py-2.5 bg-white/10 text-white font-medium rounded-xl hover:bg-white/20 transition-colors border border-white/10"
+                      className="px-3 sm:px-5 py-2 sm:py-2.5 bg-white/10 text-white font-medium rounded-xl hover:bg-white/20 transition-colors border border-white/10 text-xs sm:text-sm"
                     >
                       {isPaused ? (
                         <>
-                          <span className="inline-block mr-2">&#9654;</span> Resume
+                          <span className="inline-block mr-1 sm:mr-2">&#9654;</span> Resume
                         </>
                       ) : (
                         <>
-                          <span className="inline-block mr-2">&#10073;&#10073;</span> Pause
+                          <span className="inline-block mr-1 sm:mr-2">&#10073;&#10073;</span> Pause
                         </>
                       )}
                     </button>
                     <button
                       onClick={stopRecording}
-                      className="px-5 py-2.5 bg-red-500/20 text-red-400 font-medium rounded-xl hover:bg-red-500/30 border border-red-500/30 transition-colors flex items-center"
+                      className="px-3 sm:px-5 py-2 sm:py-2.5 bg-red-500/20 text-red-400 font-medium rounded-xl hover:bg-red-500/30 border border-red-500/30 transition-colors flex items-center text-xs sm:text-sm"
                     >
-                      <MicOff className="w-4 h-4 mr-2" /> Stop
+                      <MicOff className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-1.5 sm:mr-2" /> Stop
                     </button>
                   </div>
                 </div>
@@ -1460,7 +1482,6 @@ interface GoogleCalendarEvent {
               <div className="mb-8 p-6 bg-red-500/10 border border-red-500/30 rounded-2xl animate-scale-in">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
                     <span className="font-bold text-red-400">Recorded Session Ready</span>
                   </div>
                   <button
@@ -1482,14 +1503,13 @@ interface GoogleCalendarEvent {
 
             {summary && (
               <div className="mb-8 p-6 bg-red-500/5 backdrop-blur-xl border border-red-500/20 rounded-2xl shadow-[0_0_20px_rgba(239,68,68,0.1)] animate-slide-in-bottom hover-glow-red">
-                <div className="font-semibold mb-4 text-red-400 text-lg flex items-center justify-between">
+                <div className="font-semibold mb-4 text-red-400 text-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                   <div className="flex items-center">
-                    <div className="w-2 h-2 bg-red-500 rounded-full mr-3 animate-pulse"></div>
                     Latest Summary
                   </div>
                   <button
                     onClick={downloadFullReport}
-                    className="flex items-center gap-2 px-4 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-500 border border-red-500/30 rounded-xl text-xs font-bold transition-all active:scale-95 shadow-lg shadow-red-900/20"
+                    className="flex items-center gap-2 px-4 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-500 border border-red-500/30 rounded-xl text-xs font-bold transition-all active:scale-95 shadow-lg shadow-red-900/20 w-full sm:w-auto justify-center"
                   >
                     <Upload className="w-3.5 h-3.5 rotate-180" />
                     Download Full Report
@@ -1554,14 +1574,15 @@ interface GoogleCalendarEvent {
             {/* PM Agent Outputs */}
             {(pmLoading || pmPRD || pmUserStories || pmSprintPlan) && (
               <div className="mb-8 animate-fade-in-up">
-                <div className="flex items-center gap-3 mb-4">
+                <div className="flex items-center gap-3 mb-4" id="pm-insights-section">
                   <Sparkles className="w-6 h-6 text-red-400" />
                   <h2 className="text-xl font-bold text-white tracking-tight">PM Agent Insights</h2>
                   {pmLoading && <div className="w-4 h-4 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />}
+                  {pmStatus && !pmLoading && <span className="text-xs text-emerald-400 font-medium animate-pulse">{pmStatus}</span>}
                 </div>
 
                 {/* Tabs */}
-                <div className="flex gap-2 mb-4">
+                <div className="flex gap-2 mb-4 overflow-x-auto pb-1 -mx-1 px-1">
                   {[
                     { key: 'prd' as const, label: 'PRD', icon: <FileText className="w-4 h-4" />, activeClass: 'bg-red-500/20 text-red-400 border border-red-500/30 shadow-[0_0_15px_rgba(239,68,68,0.15)]' },
                     { key: 'stories' as const, label: 'User Stories', icon: <Users className="w-4 h-4" />, activeClass: 'bg-purple-500/20 text-purple-400 border border-purple-500/30 shadow-[0_0_15px_rgba(168,85,247,0.15)]' },
@@ -1585,8 +1606,8 @@ interface GoogleCalendarEvent {
                 {pmLoading && !pmPRD && !pmUserStories && !pmSprintPlan && (
                   <div className="p-8 bg-red-500/5 border border-red-500/20 rounded-2xl flex flex-col items-center space-y-4 animate-pulse">
                     <div className="w-12 h-12 border-4 border-red-500 border-t-transparent rounded-full animate-spin" />
-                    <div className="text-red-400 font-semibold text-lg">AI is generating PM insights...</div>
-                    <div className="text-gray-400 text-sm">Creating PRD, User Stories, and Sprint Plan from your meeting summary</div>
+                    <div className="text-red-400 font-semibold text-lg">{pmStatus || 'AI is generating PM insights...'}</div>
+                    <div className="text-gray-400 text-sm">Structuring data from your meeting summary</div>
                   </div>
                 )}
 
@@ -1645,7 +1666,9 @@ interface GoogleCalendarEvent {
                   )}
               </div>
             )}
-            {Object.keys(groupedMeetings).length === 0 ? (
+            </>)}
+
+            {mainView === 'meetings' && (Object.keys(groupedMeetings).length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full py-20">
                 <div className="w-24 h-24 mb-6 rounded-3xl bg-red-500/10 flex items-center justify-center border border-red-500/20 relative shadow-[0_0_30px_rgba(239,68,68,0.15)]">
                   <div className="absolute inset-0 bg-red-500/20 rounded-3xl blur-xl pb-4"></div>
@@ -1689,27 +1712,73 @@ interface GoogleCalendarEvent {
                 <div key={date} className="mb-10">
                   <div className="text-sm font-semibold text-gray-400 mb-4 px-2 uppercase tracking-wider flex items-center justify-between">
                     <span>Scheduled Events: {date}</span>
-                    {date === new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }) && (
-                      <span className="text-[10px] bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full font-bold">UPCOMING</span>
-                    )}
                   </div>
                   {meetings.map((meeting, idx) => (
                     <div key={meeting.id} className="flex flex-col md:flex-row md:items-start bg-white/5 border border-white/10 rounded-2xl px-6 py-5 mb-4 hover:bg-white/10 transition-colors backdrop-blur-sm shadow-lg group hover-lift animate-fade-in-up relative overflow-hidden" style={{ animationDelay: `${0.05 * idx}s` }}>
 
                       {/* Left icon distinguishing type */}
                       <div className={`w-12 h-12 rounded-xl border flex items-center justify-center font-bold text-lg mb-4 md:mb-0 md:mr-5 flex-shrink-0 z-10 transition-all group-hover:scale-110 
-                        ${meeting.type === 'calendar'
+                        ${(meeting.type === 'calendar' || meeting.is_calendar)
                           ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
                           : 'bg-red-500/10 border-red-500/30 text-red-400'}`}>
-                        {meeting.type === 'calendar' ? <CalendarIcon size={20} /> : (userEmail ? userEmail[0].toUpperCase() : "M")}
+                        {(meeting.type === 'calendar' || meeting.is_calendar) ? <CalendarIcon size={20} /> : (userEmail ? userEmail[0].toUpperCase() : "M")}
                       </div>
 
                       <div className="flex-1 mt-2 md:mt-0 z-10 w-full">
                         <div className="flex items-center justify-between w-full mb-1">
                           <div className="font-semibold text-white text-lg truncate flex-1 pr-4">{meeting.summary || 'Summary Pending'}</div>
-                          {meeting.type === 'calendar' && (
-                            <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded border bg-blue-500/10 text-blue-400 border-blue-500/20 flex-shrink-0 ml-2">SCHEDULED</span>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {meeting.type === 'calendar' && (
+                              <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded border bg-blue-500/10 text-blue-400 border-blue-500/20 flex-shrink-0 ml-2">SCHEDULED</span>
+                            )}
+                            {(() => {
+                              // Fallback for older meetings without link/platform fields
+                              let meetingLink = meeting.link;
+                              let meetingPlatform = meeting.platform;
+                              
+                              if (!meetingLink && meeting.transcript?.includes('Link: ')) {
+                                meetingLink = meeting.transcript.split('Link: ')[1]?.split('\n')[0]?.trim();
+                              }
+                              if (!meetingPlatform) {
+                                if (meeting.summary?.includes('Meet')) meetingPlatform = 'Google Meet';
+                                else if (meeting.summary?.includes('Zoom')) meetingPlatform = 'Zoom';
+                                else if (meeting.summary?.includes('Teams')) meetingPlatform = 'Microsoft Teams';
+                              }
+
+                              const bot = Object.values(activeBots).find(b => b.meeting_url === meetingLink);
+                              if (bot) {
+                                return (
+                                  <div className="flex items-center gap-2">
+                                    <span className={`text-[10px] font-bold tracking-wider px-2 py-0.5 rounded border flex-shrink-0
+                                      ${bot.status === 'done' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 
+                                        bot.status === 'fatal' ? 'bg-red-500/10 text-red-400 border-red-500/20' : 
+                                        'bg-purple-500/10 text-purple-400 border-purple-500/20 animate-pulse'}`}>
+                                      BOT: {bot.status.toUpperCase().replace('_', ' ')}
+                                    </span>
+                                    {bot.status === 'done' && (
+                                      <button 
+                                        onClick={() => handleFetchBotTranscript(bot.id)}
+                                        className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded border bg-emerald-600 text-white border-emerald-500 hover:bg-emerald-500 transition-colors"
+                                      >
+                                        FETCH TRANSCRIPT
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              } else if (meetingLink && (meetingPlatform?.includes('Meet') || meetingPlatform?.includes('Zoom') || meetingPlatform?.includes('Teams'))) {
+                                return (
+                                  <button
+                                    onClick={handleJoinMeetingBot}
+                                    className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded border bg-red-600 text-white border-red-500 hover:bg-red-500 transition-all flex items-center gap-1 shadow-lg active:scale-95"
+                                    title="Send AI Bot to join and record"
+                                  >
+                                    <Video size={10} /> JOIN BOT
+                                  </button>
+                                );
+                              }
+                              return null;
+                            })()}
+                          </div>
                         </div>
 
                         <div className="text-sm text-gray-400 mb-3 flex flex-wrap items-center gap-y-2">
@@ -1735,14 +1804,13 @@ interface GoogleCalendarEvent {
                             {meeting.type === 'calendar' ? (
                               <div className="space-y-1">
                                 {meeting.transcript.split('\n').filter(line => line.trim()).map((line, i) => (
-                                  <div key={i} className="flex gap-2">
-                                    <span className="text-gray-500">•</span>
+                                  <div key={i} className="flex gap-2 text-blue-400/80">
                                     <span className="truncate">{line}</span>
                                   </div>
                                 ))}
                               </div>
                             ) : (
-                              <>{meeting.transcript.substring(0, 200)}{meeting.transcript.length > 200 ? '...' : ''}</>
+                               <>{meeting.transcript.substring(0, 200)}{meeting.transcript.length > 200 ? '...' : ''}</>
                             )}
                           </div>
                         )}
@@ -1789,29 +1857,26 @@ interface GoogleCalendarEvent {
 
                       {/* Context Menu / Delete Button */}
                       <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity z-20">
-                        {meeting.type !== 'calendar' && (
-                          <button
-                            className="bg-black/50 text-red-400 hover:text-white p-2 rounded-xl border border-red-500/30 hover:bg-red-500 hover:border-red-500 transition-all shadow-lg"
-                            onClick={() => removeMeeting(meeting.id)}
-                            title="Delete permanently"
-                          >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                          </button>
-                        )}
+                        <button
+                          className="bg-black/50 text-red-400 hover:text-white p-2 rounded-xl border border-red-500/30 hover:bg-red-500 hover:border-red-500 transition-all shadow-lg"
+                              onClick={() => removeMeeting(meeting.id)}
+                          title="Delete permanently"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
                       </div>
                     </div>
                   ))}
                 </div>
               ))
-            )}
+            ))}
           </section>
 
           <aside className={`
-            fixed md:relative inset-y-0 left-0 w-64 md:w-96 bg-[#0B0C10] md:bg-[#0B0C10]/80 backdrop-blur-md 
-            border-r md:border-r-0 md:border-l border-white/5 px-4 md:px-8 py-8 flex-col z-[70] md:z-20
+            fixed xl:relative inset-y-0 right-0 left-auto w-[85vw] sm:w-80 md:w-96 bg-[#0B0C10] xl:bg-[#0B0C10]/80 backdrop-blur-md
+            border-l border-red-500/10 px-4 sm:px-6 md:px-8 py-6 sm:py-8 flex-col z-[70] xl:z-20
             transition-transform duration-300 ease-in-out overflow-y-auto custom-scrollbar
-            ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
-            xl:flex
+            hidden xl:flex
           `}>
             <div className="flex flex-col mb-8">
               <h3 className="text-xl font-bold text-white tracking-tight mb-6">Calendar</h3>
@@ -1855,49 +1920,23 @@ interface GoogleCalendarEvent {
                 value={selectedDate}
                 className="react-calendar-fancy dark-theme"
                 tileClassName={({ date }) => {
-                  const hasMeeting = allMeetings.some(m => {
-                    const mDate = new Date(m.date);
-                    return mDate.getDate() === date.getDate() &&
-                      mDate.getMonth() === date.getMonth() &&
-                      mDate.getFullYear() === date.getFullYear();
-                  });
+                  const hasMeeting = calendarMeetings.some(m => new Date(m.date).toDateString() === date.toDateString());
+                  const isSelected = selectedDate && date.toDateString() === selectedDate.toDateString();
+                  const isToday = date.toDateString() === new Date().toDateString();
 
-                  // Check if any meeting on this date is a scheduled calendar event
-                  const hasScheduled = allMeetings.some(m => {
-                    const mDate = new Date(m.date);
-                    return m.type === 'calendar' &&
-                      mDate.getDate() === date.getDate() &&
-                      mDate.getMonth() === date.getMonth() &&
-                      mDate.getFullYear() === date.getFullYear();
-                  });
+                  let classes = "rounded-xl transition-all duration-200 ";
 
-                  if (date.toDateString() === new Date().toDateString() && (!selectedDate || date.toDateString() !== selectedDate.toDateString())) {
-                    return `bg-white/10 font-bold text-white rounded-xl border border-white/20 ${hasMeeting ? 'has-meeting' : ''} ${hasScheduled ? 'has-scheduled' : ''}`;
+                  if (isSelected) {
+                    classes += "bg-red-600 text-white font-bold shadow-[0_0_15px_rgba(239,68,68,0.5)] z-10 scale-105 ";
+                  } else if (hasMeeting) {
+                    classes += "bg-blue-600/20 text-blue-400 font-bold border border-blue-500/30 hover:bg-blue-600/30 ";
+                  } else if (isToday) {
+                    classes += "bg-white/10 font-bold text-white border border-white/20 ";
+                  } else {
+                    classes += "text-gray-400 hover:bg-white/5 hover:text-white ";
                   }
-                  if (selectedDate && date.toDateString() === selectedDate.toDateString()) {
-                    return `bg-red-600 text-white font-bold rounded-xl shadow-[0_0_15px_rgba(239,68,68,0.5)] ${hasMeeting ? 'has-meeting' : ''} ${hasScheduled ? 'has-scheduled' : ''}`;
-                  }
-                  return `text-gray-400 hover:bg-white/5 hover:text-white rounded-xl transition-colors ${hasMeeting ? 'has-meeting' : ''} ${hasScheduled ? 'has-scheduled' : ''}`;
-                }}
-                tileContent={({ date }) => {
-                  const dayMeetings = allMeetings.filter(m => {
-                    const mDate = new Date(m.date);
-                    return mDate.getDate() === date.getDate() &&
-                      mDate.getMonth() === date.getMonth() &&
-                      mDate.getFullYear() === date.getFullYear();
-                  });
 
-                  if (dayMeetings.length === 0) return null;
-
-                  const hasRecorded = dayMeetings.some(m => m.type !== 'calendar');
-                  const hasScheduled = dayMeetings.some(m => m.type === 'calendar');
-
-                  return (
-                    <div className="flex justify-center gap-1 mt-1 shrink-0 h-1.5">
-                      {hasRecorded && <div className="w-1.5 h-1.5 bg-red-400 rounded-full animate-pulse"></div>}
-                      {hasScheduled && <div className="w-1.5 h-1.5 bg-blue-400 rounded-full shadow-[0_0_5px_rgba(96,165,250,0.5)]"></div>}
-                    </div>
-                  );
+                  return classes;
                 }}
               />
             </div>
@@ -1906,11 +1945,71 @@ interface GoogleCalendarEvent {
         </div>
       </div>
 
+      {/* Calendar Selection Modal */}
+      {showCalendarModal && (
+        <div className="fixed inset-0 z-[110] flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowCalendarModal(false)}></div>
+          <div className="relative bg-[#0B0C10] border border-white/10 rounded-t-3xl sm:rounded-3xl shadow-2xl max-w-2xl w-full overflow-hidden animate-scale-in max-h-[90vh] sm:max-h-none">
+            <div className="px-8 py-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
+              <h2 className="text-xl font-bold text-white flex items-center gap-3">
+                <CalendarIcon className="w-5 h-5 text-blue-400" /> Select Meetings to Add
+              </h2>
+              <button onClick={() => setShowCalendarModal(false)} className="text-gray-500 hover:text-white text-2xl font-light">&times;</button>
+            </div>
+
+            <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto custom-scrollbar">
+              {fetchedCalendarEvents.length === 0 ? (
+                <div className="text-center py-10 text-gray-400">No upcoming meetings found in your calendar.</div>
+              ) : (
+                fetchedCalendarEvents.map((event) => {
+                  const isAlreadyAdded = calendarMeetings.some(m => m.id === event.id);
+                  return (
+                    <div key={event.id} className="p-4 bg-white/5 rounded-2xl border border-white/5 flex items-center justify-between hover:bg-white/10 transition-all group">
+                      <div className="flex-1 pr-4">
+                        <div className="font-semibold text-white group-hover:text-blue-400 transition-colors">{event.summary}</div>
+                        <div className="text-xs text-gray-400 mt-1 flex items-center gap-2">
+                          <Clock className="w-3 h-3" />
+                          {new Date(event.date).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          <span className="opacity-30">|</span>
+                          <span className="text-blue-400/70">{event.platform}</span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => !isAlreadyAdded && saveMeetingToDatabase(event, true)}
+                        disabled={isAlreadyAdded}
+                        className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                          isAlreadyAdded 
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 cursor-default'
+                            : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20 active:scale-95'
+                        }`}
+                      >
+                        {isAlreadyAdded ? (
+                          <span className="flex items-center gap-1.5"><CheckCircle className="w-3.5 h-3.5" /> Added</span>
+                        ) : 'Add to Meetings'}
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="p-6 bg-white/[0.02] border-t border-white/5">
+              <button
+                onClick={() => setShowCalendarModal(false)}
+                className="w-full py-3.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-2xl transition-all shadow-xl shadow-blue-900/20 active:scale-[0.98]"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Settings Modal */}
       {_showSettings && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => _setShowSettings(false)}></div>
-          <div className="relative bg-[#0B0C10] border border-white/10 rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden animate-scale-in">
+          <div className="relative bg-[#0B0C10] border border-white/10 rounded-t-3xl sm:rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden animate-scale-in max-h-[90vh] sm:max-h-none">
             <div className="px-8 py-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
               <h2 className="text-xl font-bold text-white flex items-center gap-3">
                 <Settings className="w-5 h-5 text-red-400" /> Settings
@@ -1933,7 +2032,22 @@ interface GoogleCalendarEvent {
                 </div>
               </section>
 
-              {/* API Section */}
+              {/* Bot Section */}
+              <section>
+                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4">Meeting Bot Configuration</h3>
+                <div className="p-4 bg-white/5 rounded-2xl border border-white/5 group hover:border-red-500/30 transition-all">
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-2">Bot Display Name</label>
+                  <input
+                    type="text"
+                    value={botName}
+                    onChange={(e) => setBotName(e.target.value)}
+                    placeholder="e.g. 3.0 Agent"
+                    className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-sm text-white focus:border-red-500/50 outline-none transition-all placeholder:text-gray-700"
+                  />
+                  <p className="mt-2 text-[10px] text-gray-500 italic leading-relaxed">This name will appear in the participant list when the bot joins Zoom/Meet/Teams calls.</p>
+                </div>
+              </section>
+
               <section>
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest">AI Engine & Fallbacks</h3>
@@ -1945,7 +2059,7 @@ interface GoogleCalendarEvent {
                     <div className="flex gap-2">
                       <input
                         type="password"
-                        value="••••••••••••••••••••••••"
+                        value="ΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇó"
                         readOnly
                         className="flex-1 bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-gray-500 outline-none"
                       />
@@ -1957,7 +2071,7 @@ interface GoogleCalendarEvent {
                     <div className="flex gap-2">
                       <input
                         type="password"
-                        value="••••••••••••••••••••••••"
+                        value="ΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇó"
                         readOnly
                         className="flex-1 bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-gray-500 outline-none"
                       />

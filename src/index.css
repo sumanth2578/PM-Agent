@@ -44,7 +44,7 @@
 }
 
 /* ========================================
-   🎬 GLOBAL RED THEME SYSTEM — 3.0Labs
+   GLOBAL RED THEME SYSTEM — 3.0Labs
    ======================================== */
 
 /* --- Auth Overhaul & Spy Robot --- */
@@ -611,6 +611,63 @@
     animation-delay: 0.4s;
 }
 
+/* --- Premium Reveal & Logic --- */
+@keyframes fullReveal {
+    from { opacity: 0; filter: blur(20px); transform: translateY(20px) scale(0.98); }
+    to { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); }
+}
+
+@keyframes widthGrow {
+    from { width: 0; opacity: 0; }
+    to { width: 100%; opacity: 1; }
+}
+
+@keyframes gradientY {
+    0%, 100% { background-position: 50% 0%; }
+    50% { background-position: 50% 100%; }
+}
+
+@keyframes scan {
+    0% { transform: translateY(-100%); opacity: 0; }
+    50% { opacity: 0.5; }
+    100% { transform: translateY(400%); opacity: 0; }
+}
+
+@keyframes revealRotate {
+    0% { opacity: 0; transform: translateY(40px) rotateX(-20deg) scale(0.9); filter: blur(10px); }
+    100% { opacity: 1; transform: translateY(0) rotateX(0deg) scale(1); filter: blur(0); }
+}
+
+.animate-full-reveal {
+    animation: fullReveal 1.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-width-grow {
+    animation: widthGrow 2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-gradient-y {
+    animation: gradientY 10s ease infinite;
+    background-size: 100% 200%;
+}
+
+.animate-scan {
+    animation: scan 4s linear infinite;
+}
+
+.animate-reveal-rotate {
+    animation: revealRotate 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-reveal-rotate-delayed {
+    animation: revealRotate 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    animation-delay: 0.3s;
+}
+
+.perspective-1000 {
+    perspective: 1000px;
+}
+
 /* --- Premium Hover Effects --- */
 .hover-lift {
     transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease;
@@ -641,7 +698,7 @@
 }
 
 /* ========================================
-   📅 CALENDAR COMPONENT STYLES
+   CALENDAR COMPONENT STYLES
    ======================================== */
 .react-calendar-fancy {
     border: none !important;
@@ -707,8 +764,91 @@
 }
 
 /* ========================================
-   📱 MOBILE & RESPONSIVE TWEAKS
+   MOBILE & RESPONSIVE TWEAKS
    ======================================== */
+
+/* Extra small screens (phones in portrait) */
+@media (max-width: 480px) {
+    .container {
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
+    }
+
+    h1 {
+        font-size: 1.25rem !important;
+    }
+
+    h2 {
+        font-size: 1.1rem !important;
+    }
+
+    h3 {
+        font-size: 1rem !important;
+    }
+
+    .p-8 {
+        padding: 1rem !important;
+    }
+
+    .p-6 {
+        padding: 0.875rem !important;
+    }
+
+    .p-5 {
+        padding: 0.875rem !important;
+    }
+
+    .px-8 {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+
+    .px-6 {
+        padding-left: 0.875rem !important;
+        padding-right: 0.875rem !important;
+    }
+
+    .gap-6 {
+        gap: 1rem !important;
+    }
+
+    .gap-4 {
+        gap: 0.75rem !important;
+    }
+
+    .text-3xl {
+        font-size: 1.5rem !important;
+    }
+
+    .text-2xl {
+        font-size: 1.25rem !important;
+    }
+
+    /* Reduce ambient orb sizes on small screens */
+    .animate-float,
+    .animate-float-slow,
+    .animate-orb-pulse {
+        transform: scale(0.5) !important;
+    }
+
+    /* Make modals full-width on very small screens */
+    .max-w-2xl,
+    .max-w-lg {
+        max-width: calc(100vw - 1.5rem) !important;
+    }
+
+    /* Reduce button padding on mobile */
+    .px-5 {
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
+    }
+
+    .py-2\.5 {
+        padding-top: 0.5rem !important;
+        padding-bottom: 0.5rem !important;
+    }
+}
+
 @media (max-width: 640px) {
     .container {
         padding-left: 1rem !important;
@@ -732,6 +872,20 @@
     .p-6 {
         padding: 1.25rem !important;
     }
+
+    /* Premium summary responsive */
+    .premium-summary h1 {
+        font-size: 1.25rem !important;
+    }
+
+    .premium-summary h2 {
+        font-size: 1rem !important;
+    }
+
+    /* Stack flex-wrap items vertically */
+    .flex-wrap {
+        gap: 0.5rem !important;
+    }
 }
 
 /* Fix for mobile horizontal scroll issues in flex/grid */
@@ -741,6 +895,16 @@
 
 .grid {
     min-width: 0;
+}
+
+/* Prevent overflow on all elements */
+* {
+    max-width: 100%;
+}
+
+/* Reset max-width for specific elements that need it */
+html, body, #root, .fixed, [class*="absolute"], svg, img, video, canvas, iframe {
+    max-width: none;
 }
 
 @media (max-width: 768px) {
@@ -771,10 +935,52 @@
     .flex-1.flex.flex-col.md\:ml-64 {
         margin-left: 0 !important;
     }
+
+    /* Hide decorative elements on mobile for performance */
+    .animate-plane-fly,
+    .animate-plane-fly-alt {
+        display: none !important;
+    }
+
+    /* Reduce blur for better mobile performance */
+    .blur-\[120px\],
+    .blur-\[140px\],
+    .blur-\[160px\] {
+        filter: blur(60px) !important;
+    }
+
+    /* Make ambient orbs smaller on tablets */
+    .w-96 {
+        width: 12rem !important;
+    }
+
+    .h-96 {
+        height: 12rem !important;
+    }
+
+    .w-\[500px\] {
+        width: 15rem !important;
+    }
+
+    .h-\[500px\] {
+        height: 15rem !important;
+    }
+}
+
+/* Tablet landscape tweaks */
+@media (min-width: 769px) and (max-width: 1024px) {
+    /* Reduce sidebar width slightly on tablets */
+    aside {
+        width: 14rem !important;
+    }
+
+    .md\:ml-64 {
+        margin-left: 14rem !important;
+    }
 }
 
 /* ========================================
-   ☀️ LIGHT THEME NORMALIZATION
+   ΓÿÇ∩╕Å LIGHT THEME NORMALIZATION
    ======================================== */
 
 .light-theme {
@@ -911,7 +1117,7 @@
 }
 
 /* ========================================
-   💎 PREMIUM SUMMARY & MARKDOWN STYLES
+   PREMIUM SUMMARY & MARKDOWN STYLES
    ======================================== */
 
 .premium-summary h1 {

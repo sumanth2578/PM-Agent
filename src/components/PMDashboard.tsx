@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { LogOut, Menu, FileText, Users, Calendar, BarChart3, Sparkles, ArrowRight, History, Sun, Moon, Brain, Download, Loader2, RotateCw } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { FileText, Users, Calendar, BarChart3, Sparkles, ArrowRight, Download, Loader2, RotateCw } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
 // @ts-ignore
@@ -13,23 +13,16 @@ interface PMStats {
 }
 
 export function PMDashboard() {
-    const [sidebarOpen, setSidebarOpen] = useState(false);
-    const [userName, setUserName] = useState('');
-    const [userEmail, setUserEmail] = useState('');
     const [stats, setStats] = useState<PMStats>({ prdsCreated: 0, storiesGenerated: 0, sprintsPlanned: 0 });
     const [isDownloading, setIsDownloading] = useState(false);
-    const { theme, toggleTheme } = useTheme();
-    const navigate = useNavigate();
+    const { theme } = useTheme();
     const [loading, setLoading] = useState(false);
+    
     const fetchUserAndStats = async () => {
         setLoading(true);
         try {
             const { data: { user } } = await supabase.auth.getUser();
             if (user) {
-                setUserEmail(user.email || '');
-                setUserName(user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'User');
-
-                // Fetch counts individually to handle potential issues with head: true or specific table errors
                 const prdRes = await supabase.from('prds').select('id', { count: 'exact' }).eq('user_id', user.id);
                 const storyRes = await supabase.from('user_stories').select('id', { count: 'exact' }).eq('user_id', user.id);
                 const sprintRes = await supabase.from('sprint_plans').select('id', { count: 'exact' }).eq('user_id', user.id);
@@ -90,7 +83,7 @@ export function PMDashboard() {
                     .replace(/\n/g, '<br/>');
             };
 
-            innerHTML += `<h2 style="color: #ef4444; margin-top: 30px; border-bottom: 1px solid #ddd;">📄 Product Requirements Documents</h2>`;
+            innerHTML += `<h2 style="color: #ef4444; margin-top: 30px; border-bottom: 1px solid #ddd;">equivôä Product Requirements Documents</h2>`;
             if (prds.data?.length) {
                 prds.data.forEach((prd: any) => {
                     innerHTML += `
@@ -104,7 +97,7 @@ export function PMDashboard() {
                 });
             } else { innerHTML += `<p>No PRDs found.</p>`; }
 
-            innerHTML += `<h2 style="color: #ef4444; margin-top: 40px; border-bottom: 1px solid #ddd;">👥 User Stories</h2>`;
+            innerHTML += `<h2 style="color: #ef4444; margin-top: 40px; border-bottom: 1px solid #ddd;">equivôæ User Stories</h2>`;
             if (stories.data?.length) {
                 stories.data.forEach((story: any) => {
                     innerHTML += `
@@ -118,7 +111,7 @@ export function PMDashboard() {
                 });
             } else { innerHTML += `<p>No user stories found.</p>`; }
 
-            innerHTML += `<h2 style="color: #ef4444; margin-top: 40px; border-bottom: 1px solid #ddd;">📅 Sprint Plans</h2>`;
+            innerHTML += `<h2 style="color: #ef4444; margin-top: 40px; border-bottom: 1px solid #ddd;">equivôä Sprint Plans</h2>`;
             if (sprints.data?.length) {
                 sprints.data.forEach((sprint: any) => {
                     innerHTML += `
@@ -149,11 +142,6 @@ export function PMDashboard() {
         } finally {
             setIsDownloading(false);
         }
-    };
-
-    const handleSignOut = async () => {
-        await supabase.auth.signOut();
-        navigate('/auth');
     };
 
     const pmTools = [
@@ -196,105 +184,8 @@ export function PMDashboard() {
     ];
 
     return (
-        <div className={`flex h-screen w-full overflow-hidden transition-colors duration-300 ${theme === 'dark' ? 'bg-[#050505] text-white' : 'bg-slate-50 text-slate-900'}`}>
-            {/* Mobile Sidebar Overlay */}
-            {sidebarOpen && (
-                <div
-                    className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 md:hidden"
-                    onClick={() => setSidebarOpen(false)}
-                />
-            )}
-
-            {/* Sidebar */}
-            <aside className={`
-        fixed inset-y-0 left-0 z-40 w-64 border-r transform transition-transform duration-300 ease-in-out flex flex-col pt-6 pb-4
-        ${theme === 'dark' ? 'bg-[#0B0C10] border-white/10' : 'bg-white border-slate-200'}
-        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
-      `}>
-                <div className="flex items-center justify-between px-6 mb-8 relative">
-                    <img src="/logo.png" alt="3.0Labs" className="h-10 w-auto object-contain" />
-                    <button className="md:hidden text-gray-400 hover:text-white" onClick={() => setSidebarOpen(false)}>&times;</button>
-                    {/* Tiny Sidebar Robot */}
-                    <div className="absolute -top-4 -right-2 w-8 h-8 opacity-40">
-                        <div className="w-6 h-4 bg-[#1a1c24] border-b border-red-500/50 rounded-b-lg flex items-center justify-center relative">
-                            <div className="flex gap-1">
-                                <div className="w-0.5 h-0.5 bg-red-500 rounded-full"></div>
-                                <div className="w-0.5 h-0.5 bg-red-500 rounded-full"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div className="px-6 mb-6">
-                    <div className="flex flex-col mb-4">
-                        <div className="font-semibold text-white">{userName || "Your Name"}</div>
-                        <div className="text-xs text-gray-400">{userEmail || "your@email.com"}</div>
-                    </div>
-                </div>
-
-                <nav className="flex-1 overflow-y-auto custom-scrollbar py-2">
-                    <ul className="space-y-1 px-3">
-                        <li className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">Meetings</li>
-                        <li>
-                            <Link to="/summarizer" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                                <span className="mr-3 text-lg opacity-80">🏠</span> Home
-                            </Link>
-                        </li>
-                        <li>
-                            <Link to="/history" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                                <History className="w-5 h-5 mr-3 opacity-80" /> Meeting History
-                            </Link>
-                        </li>
-                        <li>
-                            <Link to="/ai-chat" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                                <Brain className="w-5 h-5 mr-3 opacity-80" /> 3.0 Agent
-                            </Link>
-                        </li>
-                        <li className="pt-4 px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">PM Agent</li>
-                        <li>
-                            <Link to="/pm-dashboard" className="flex items-center text-white bg-white/10 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                                <Sparkles className="w-5 h-5 mr-3 text-red-500 animate-pulse" /> PM Dashboard
-                            </Link>
-                        </li>
-                        <li>
-                            <Link to="/prd-generator" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                                <FileText className="w-5 h-5 mr-3 opacity-80" /> PRD Generator
-                            </Link>
-                        </li>
-                        <li>
-                            <Link to="/user-stories" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                                <Users className="w-5 h-5 mr-3 opacity-80" /> User Stories
-                            </Link>
-                        </li>
-                        <li>
-                            <Link to="/sprint-planner" className="flex items-center text-gray-300 hover:text-white hover:bg-white/5 font-medium rounded-xl px-3 py-2.5 transition-colors">
-                                <Calendar className="w-5 h-5 mr-3 opacity-80" /> Sprint Planner
-                            </Link>
-                        </li>
-                    </ul>
-                </nav>
-
-                <div className="px-6 space-y-2">
-                    <button onClick={toggleTheme} className="flex items-center w-full text-gray-400 hover:text-indigo-400 hover:bg-indigo-500/10 px-3 py-2.5 rounded-xl transition-all group">
-                        {theme === 'dark' ? <Sun className="w-5 h-5 mr-3 group-hover:rotate-180 transition-transform duration-500" /> : <Moon className="w-5 h-5 mr-3 group-hover:-rotate-12 transition-transform duration-500" />}
-                        {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
-                    </button>
-                    <button onClick={handleSignOut} className="flex items-center w-full text-gray-400 hover:text-red-400 hover:bg-red-500/10 px-3 py-2.5 rounded-xl transition-colors">
-                        <LogOut className="w-5 h-5 mr-3" /> Sign Out
-                    </button>
-                </div>
-            </aside>
-
-            <button
-                className="md:hidden fixed top-4 right-4 z-50 bg-[#0B0C10] border border-white/10 rounded-full p-2 shadow-lg"
-                onClick={() => setSidebarOpen(!sidebarOpen)}
-                aria-label="Open menu"
-            >
-                <Menu className="w-6 h-6 text-white" />
-            </button>
-
-            {/* Main Content */}
-            <div className="flex-1 flex flex-col md:ml-64 h-screen overflow-hidden relative">
+        <>
+            <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
                 {/* Massive Background Branding Text - RED THEME */}
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden z-0 select-none">
                     <div className="text-[20vw] font-black text-red-500/[0.03] whitespace-nowrap leading-none tracking-tighter transform -rotate-12 select-none animate-pulse-slow">
@@ -302,65 +193,54 @@ export function PMDashboard() {
                     </div>
                 </div>
 
-                {/* Roaming Spy Robot */}
-                <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-                    <div className="absolute w-24 h-16 animate-robot-roam opacity-20" style={{ animationDelay: '5s' }}>
-                        <div className="w-16 h-10 bg-[#1a1c24] border-b-2 border-red-500/50 rounded-b-2xl shadow-[0_5px_15px_rgba(239,68,68,0.2)] flex items-center justify-center relative">
-                            <div className="flex gap-2">
-                                <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-robot-blink"></div>
-                                <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-robot-blink"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 {/* Ambient orbs - RED THEME */}
-                <div className="absolute top-0 right-0 -mr-20 -mt-20 w-96 h-96 bg-red-600/20 rounded-full blur-[120px] animate-float pointer-events-none"></div>
-                <div className="absolute bottom-0 left-0 -ml-20 -mb-20 w-80 h-80 bg-red-900/20 rounded-full blur-[100px] animate-float-slow pointer-events-none"></div>
-                <div className="absolute top-1/3 right-1/4 w-60 h-60 bg-red-500/10 rounded-full blur-[80px] animate-orb-pulse pointer-events-none"></div>
+                <div className="absolute top-0 right-0 -mr-20 -mt-20 w-48 h-48 sm:w-72 sm:h-72 md:w-96 md:h-96 bg-red-600/20 rounded-full blur-[120px] animate-float pointer-events-none"></div>
+                <div className="absolute bottom-0 left-0 -ml-20 -mb-20 w-40 h-40 sm:w-60 sm:h-60 md:w-80 md:h-80 bg-red-900/20 rounded-full blur-[100px] animate-float-slow pointer-events-none"></div>
+                <div className="absolute top-1/3 right-1/4 w-32 h-32 sm:w-48 sm:h-48 md:w-60 md:h-60 bg-red-500/10 rounded-full blur-[80px] animate-orb-pulse pointer-events-none"></div>
                 <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-red-500/50 to-transparent animate-shimmer z-20"></div>
 
-                <header className={`flex items-center justify-between px-4 md:px-10 py-6 backdrop-blur-xl border-b z-30 flex-shrink-0 ${theme === 'dark' ? 'bg-[#0B0C10]/80 border-white/5' : 'bg-white/80 border-slate-200'}`}>
+                <header className={`flex flex-col sm:flex-row items-start sm:items-center justify-between px-3 sm:px-4 md:px-6 lg:px-10 py-4 sm:py-6 gap-3 sm:gap-0 backdrop-blur-xl border-b z-30 flex-shrink-0 ${theme === 'dark' ? 'bg-[#0B0C10]/80 border-red-500/10' : 'bg-white/80 border-slate-200'}`}>
                     <div>
-                        <h1 className={`text-2xl font-bold tracking-tight flex items-center gap-3 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
-                            <Sparkles className="w-7 h-7 text-red-500 animate-pulse" />
-                            Product Manager AI Agent
+                        <h1 className={`text-lg sm:text-xl md:text-2xl font-bold tracking-tight flex items-center gap-2 sm:gap-3 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                            <Sparkles className="w-5 h-5 sm:w-7 sm:h-7 text-red-500 animate-pulse" />
+                            PM AI Agent
                         </h1>
-                        <p className="text-gray-400 text-sm mt-1 flex items-center gap-2">
-                            AI-powered tools to supercharge your product management workflow
+                        <p className="text-gray-400 text-xs sm:text-sm mt-1 flex items-center gap-2">
+                            <span className="hidden sm:inline">AI-powered tools to supercharge your product management workflow</span>
+                            <span className="sm:hidden">AI-powered PM tools</span>
                             <button
                                 onClick={handleSync}
                                 disabled={isSyncing}
-                                className={`p-2 rounded-xl border transition-all ${isSyncing ? 'bg-red-500/20 border-red-500/50 text-red-500 cursor-not-allowed' : 'bg-white/5 border-white/10 text-gray-400 hover:text-red-400 hover:bg-red-500/10'}`}
+                                className={`p-1.5 sm:p-2 rounded-xl border transition-all ${isSyncing ? 'bg-red-500/20 border-red-500/50 text-red-500 cursor-not-allowed' : 'bg-white/5 border-white/10 text-gray-400 hover:text-red-400 hover:bg-red-500/10'}`}
                                 title="Refresh Stats"
                             >
-                                <RotateCw className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} />
+                                <RotateCw className={`w-4 h-4 sm:w-5 sm:h-5 ${isSyncing ? 'animate-spin' : ''}`} />
                             </button>
                         </p>
                     </div>
                     <button
                         onClick={handleDownloadReport}
                         disabled={isDownloading}
-                        className="flex items-center gap-2 px-6 py-3 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl transition-all shadow-[0_0_20px_rgba(239,68,68,0.3)] hover:shadow-[0_0_30px_rgba(239,68,68,0.5)] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 md:px-6 md:py-3 text-sm sm:text-base bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl transition-all shadow-[0_0_20px_rgba(239,68,68,0.3)] hover:shadow-[0_0_30px_rgba(239,68,68,0.5)] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         {isDownloading ? (
-                            <Loader2 className="w-5 h-5 animate-spin" />
+                            <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
                         ) : (
-                            <Download className="w-5 h-5" />
+                            <Download className="w-4 h-4 sm:w-5 sm:h-5" />
                         )}
-                        {isDownloading ? 'Generating...' : 'Download Full Report'}
+                        {isDownloading ? 'Generating...' : <><span className="hidden sm:inline">Download Full Report</span><span className="sm:hidden">Report</span></>}
                     </button>
                 </header>
 
-                <div className="flex-1 overflow-y-auto px-4 md:px-10 py-8 z-10">
+                <div className="flex-1 overflow-y-auto px-3 sm:px-4 md:px-6 lg:px-8 py-4 sm:py-6 md:py-8 z-10">
                     {/* Stats Row */}
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-10">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 sm:gap-4 mb-6 sm:mb-10">
                         {[
                             { label: 'PRDs Created', value: stats.prdsCreated, icon: <FileText className="w-5 h-5" />, color: 'text-blue-400' },
                             { label: 'Stories Generated', value: stats.storiesGenerated, icon: <Users className="w-5 h-5" />, color: 'text-purple-400' },
                             { label: 'Sprints Planned', value: stats.sprintsPlanned, icon: <Calendar className="w-5 h-5" />, color: 'text-emerald-400' },
                         ].map((stat, i) => (
-                            <div key={i} className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-5 flex items-center gap-4 hover:bg-white/[0.07] transition-colors animate-fade-in-up" style={{ animationDelay: `${i * 0.1}s` }}>
+                            <div key={i} className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4 sm:p-5 flex items-center gap-3 sm:gap-4 hover:bg-white/[0.07] transition-colors animate-fade-in-up" style={{ animationDelay: `${i * 0.1}s` }}>
                                 <div className={`w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center ${stat.color}`}>
                                     {stat.icon}
                                 </div>
@@ -377,13 +257,13 @@ export function PMDashboard() {
                     </div>
 
                     {/* PM Tools Grid */}
-                    <h2 className="text-lg font-semibold text-white mb-6 tracking-tight">AI-Powered PM Tools</h2>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <h2 className="text-base sm:text-lg font-semibold text-white mb-4 sm:mb-6 tracking-tight">AI-Powered PM Tools</h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 gap-4 sm:gap-5 md:gap-6">
                         {pmTools.map((tool, i) => (
                             <Link
                                 key={i}
                                 to={tool.link}
-                                className="group relative bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6 hover:bg-white/[0.07] transition-all duration-300 hover:border-white/20 animate-fade-in-up overflow-hidden"
+                                className="group relative bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4 sm:p-5 md:p-6 hover:bg-white/[0.07] transition-all duration-300 hover:border-white/20 animate-fade-in-up overflow-hidden"
                                 style={{ animationDelay: `${(i + 3) * 0.1}s` }}
                             >
                                 {/* Glow effect on hover */}
@@ -412,7 +292,7 @@ export function PMDashboard() {
                     </div>
 
                     {/* Quick tip - RED */}
-                    <div className="mt-10 p-5 bg-red-500/5 border border-red-500/20 rounded-2xl flex items-start gap-4 animate-fade-in-up" style={{ animationDelay: '0.7s' }}>
+                    <div className="mt-6 sm:mt-10 p-4 sm:p-5 md:p-6 bg-red-500/5 border border-red-500/20 rounded-2xl flex items-start gap-3 sm:gap-4 animate-fade-in-up" style={{ animationDelay: '0.7s' }}>
                         <Sparkles className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
                         <div>
                             <div className="font-semibold text-white mb-1">Pro Tip</div>
@@ -423,6 +303,21 @@ export function PMDashboard() {
                     </div>
                 </div>
             </div>
-        </div>
+            <style>{`
+                .custom-scrollbar::-webkit-scrollbar {
+                    width: 4px;
+                }
+                .custom-scrollbar::-webkit-scrollbar-track {
+                    background: rgba(255, 255, 255, 0.02);
+                }
+                .custom-scrollbar::-webkit-scrollbar-thumb {
+                    background: rgba(255, 255, 255, 0.1);
+                    border-radius: 10px;
+                }
+                .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+                    background: rgba(255, 255, 255, 0.2);
+                }
+            `}</style>
+        </>
     );
 }

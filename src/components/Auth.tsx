@@ -142,21 +142,21 @@ export function Auth() {
     <div className={`min-h-screen w-full flex overflow-hidden relative font-sans selection:bg-indigo-500/30 transition-colors duration-300 ${theme === 'dark' ? 'bg-[#050505]' : 'bg-slate-50'}`}>
       {/* Massive Background Branding Text - RED THEME */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden z-0 select-none">
-        <div className="text-[25vw] font-black text-red-500/[0.03] whitespace-nowrap leading-none tracking-tighter transform -rotate-12 translate-x-[-5%] translate-y-[5%] select-none animate-pulse-slow">
+        <div className={`text-[25vw] font-black whitespace-nowrap leading-none tracking-tighter transform -rotate-12 translate-x-[-5%] translate-y-[5%] select-none animate-pulse-slow ${theme === 'dark' ? 'text-red-500/[0.03]' : 'text-red-500/[0.05]'}`}>
           3.0LABS
         </div>
       </div>
 
       {/* Additional Watermark */}
-      <div className="absolute top-[10%] right-[-5%] text-[15vw] font-black text-red-500/[0.02] whitespace-nowrap leading-none tracking-tighter transform rotate-12 pointer-events-none select-none">
+      <div className={`absolute top-[10%] right-[-5%] text-[15vw] font-black whitespace-nowrap leading-none tracking-tighter transform rotate-12 pointer-events-none select-none ${theme === 'dark' ? 'text-red-500/[0.02]' : 'text-red-500/[0.04]'}`}>
         AI AGENT
       </div>
 
       {/* Spy Robot - Watching from the top */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 z-50 pointer-events-none transition-all duration-1000 animate-robot-slide-down">
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 z-50 pointer-events-none transition-all duration-1000 animate-robot-slide-down scale-75 sm:scale-100">
         <div className="relative group">
           {/* Robot Head */}
-          <div className="w-24 h-16 bg-[#1a1c24] border-b-4 border-red-500/50 rounded-b-3xl shadow-[0_10px_30px_rgba(239,68,68,0.2)] flex items-center justify-center relative overflow-hidden">
+          <div className={`w-24 h-16 border-b-4 border-red-500/50 rounded-b-3xl shadow-[0_10px_30px_rgba(239,68,68,0.2)] flex items-center justify-center relative overflow-hidden transition-colors ${theme === 'dark' ? 'bg-[#1a1c24]' : 'bg-[#2a2d3a]'}`}>
             {/* Glowing Eyes */}
             <div className="flex gap-4">
               <div className="w-3 h-3 bg-red-500 rounded-full shadow-[0_0_15px_rgba(239,68,68,0.8)] animate-robot-blink"></div>
@@ -206,9 +206,9 @@ export function Auth() {
         <div className="absolute right-0 top-0 bottom-0 w-[1px] bg-gradient-to-b from-transparent via-indigo-500/50 to-transparent animate-shimmer-v"></div>
 
         {/* Ambient Orbs — Red/Purple Palette */}
-        <div className="absolute -top-10 -left-10 w-80 h-80 bg-red-500/10 rounded-full blur-[100px] animate-float pointer-events-none"></div>
-        <div className="absolute -bottom-20 -right-20 w-72 h-72 bg-purple-500/20 rounded-full blur-[80px] animate-float-slow pointer-events-none"></div>
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-gradient-to-r from-red-600/5 via-purple-600/10 to-red-600/5 rounded-full blur-[120px] animate-orb-pulse pointer-events-none"></div>
+        <div className="absolute -top-10 -left-10 w-40 h-40 sm:w-60 sm:h-60 md:w-80 md:h-80 bg-red-500/10 rounded-full blur-[100px] animate-float pointer-events-none"></div>
+        <div className="absolute -bottom-20 -right-20 w-36 h-36 sm:w-52 sm:h-52 md:w-72 md:h-72 bg-purple-500/20 rounded-full blur-[80px] animate-float-slow pointer-events-none"></div>
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[250px] h-[250px] sm:w-[350px] sm:h-[350px] md:w-[500px] md:h-[500px] bg-gradient-to-r from-red-600/5 via-purple-600/10 to-red-600/5 rounded-full blur-[120px] animate-orb-pulse pointer-events-none"></div>
 
 
         {/* Branding for Mobile */}
@@ -419,8 +419,8 @@ export function Auth() {
       {/* Right: Visual Section */}
       <div className="flex-1 relative hidden lg:flex items-center justify-center bg-black/40 overflow-hidden z-0">
         {/* Dramatic floating ambient orbs — red themed */}
-        <div className="absolute top-[10%] left-[15%] w-96 h-96 bg-red-600/20 rounded-full blur-[140px] animate-float pointer-events-none"></div>
-        <div className="absolute bottom-[15%] right-[10%] w-[500px] h-[500px] bg-purple-600/15 rounded-full blur-[160px] animate-float-slow pointer-events-none"></div>
+        <div className="absolute top-[10%] left-[15%] w-60 h-60 lg:w-80 lg:h-80 xl:w-96 xl:h-96 bg-red-600/20 rounded-full blur-[140px] animate-float pointer-events-none"></div>
+        <div className="absolute bottom-[15%] right-[10%] w-[300px] h-[300px] lg:w-[400px] lg:h-[400px] xl:w-[500px] xl:h-[500px] bg-purple-600/15 rounded-full blur-[160px] animate-float-slow pointer-events-none"></div>
         <div className="absolute top-[40%] right-[30%] w-60 h-60 bg-red-400/10 rounded-full blur-[100px] animate-orb-pulse pointer-events-none"></div>
         <div className="absolute bottom-[30%] left-[25%] w-48 h-48 bg-pink-500/10 rounded-full blur-[80px] animate-float pointer-events-none" style={{ animationDelay: '3s' }}></div>
 
@@ -428,8 +428,8 @@ export function Auth() {
         <div className="relative z-10 text-center px-12 animate-fade-in-up">
           <div className="text-8xl font-black text-red-500 mb-6 tracking-tighter leading-none opacity-5 blur-sm absolute inset-0 flex items-center justify-center transform -translate-y-4">3.0</div>
           <div className="relative font-black text-7xl md:text-8xl tracking-tighter">
-            <span className="bg-clip-text text-transparent bg-gradient-to-r from-white via-red-200 to-white/70">3.0</span>
-            <span className="bg-clip-text text-transparent bg-gradient-to-r from-red-500 via-purple-500 to-red-500 animate-gradient">Labs</span>
+            <span className={`bg-clip-text text-transparent ${theme === 'dark' ? 'bg-gradient-to-r from-white via-red-200 to-white/70' : 'bg-gradient-to-r from-slate-800 via-red-500 to-slate-900'}`}>3.0</span>
+            <span className="bg-clip-text text-transparent bg-gradient-to-r from-red-600 via-purple-600 to-red-600 animate-gradient">Labs</span>
           </div>
           <p className="mt-8 text-xl text-gray-400 font-medium max-w-md mx-auto leading-relaxed">
             Elevating meetings with <span className="text-white border-b-2 border-red-500/50">Next-Gen Intelligence</span>.

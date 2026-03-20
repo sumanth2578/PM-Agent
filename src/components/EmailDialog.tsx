@@ -89,7 +89,7 @@ ${summary}
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4">
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/80 backdrop-blur-md"
@@ -97,8 +97,8 @@ ${summary}
       />
 
       {/* Dialog */}
-      <div className="relative bg-[#0B0C10] border border-white/10 rounded-2xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto flex flex-col z-[110] transition-all scale-100 opacity-100">
-        <div className="flex justify-between items-center p-6 border-b border-white/5">
+      <div className="relative bg-[#0B0C10] border border-white/10 rounded-t-2xl sm:rounded-2xl shadow-2xl max-w-lg w-full max-h-[85vh] overflow-y-auto flex flex-col z-[110] transition-all scale-100 opacity-100">
+        <div className="flex justify-between items-center p-4 sm:p-6 border-b border-white/5">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center text-indigo-400">
               <Mail className="w-5 h-5" />
@@ -113,7 +113,7 @@ ${summary}
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6">
           <div className="mb-6">
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">
               Recipient Email(s)

@@ -9,264 +9,9 @@ const getGenAI = () => {
   return new GoogleGenerativeAI(apiKey);
 };
 
-export async function summarizeMeeting(transcript: string) {
-  try {
-    // Check if transcript is valid
-    if (!transcript || transcript.trim() === '') {
-      return "No transcript was provided to summarize. Please ensure audio is recorded properly.";
-    }
-
-    const genAI = getGenAI();
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-    const prompt = `
-      Please analyze this meeting transcript and provide a highly structured, professional, and readable summary in Markdown. 
-      
-      **CRITICAL: Avoid literal asterisks (**) or unnecessary bolding. Use clean headers and simple bullet points.**
-      
-      Use the following format exactly:
-      
-      # 📝 Meeting Summary
-      [A concise, 2-3 sentence high-level overview of the meeting's purpose and outcome]
-      
-      ## 🌟 Key Highlights
-      - [Highlight 1]
-      - [Highlight 2]
-      - (Include any other major takeaways or interesting points)
-      
-      ## 🎯 Action Items & Owners
-      - [Owner Name]: [Specific Task]
-      - [If no owners mentioned, just list the tasks]
-      
-      ## ✅ Decisions Made
-      - [Decision 1]
-      
-      ## 📅 Next Steps
-      - [Step 1]
-      
-      Note: The transcript may contain speaker labels like [Speaker A], [Speaker B], etc. Please use these labels in your summary when referring to specific people.
-      
-      If the transcript is very short, irrelevant, or unclear, please indicate that but still attempt to extract any value possible.
-      
-      Transcript:
-      ${transcript}
-    `;
-
-    const generationConfig = {
-      temperature: 0.4,
-      topK: 32,
-      topP: 0.8,
-      maxOutputTokens: 1024,
-    };
-
-    const safetySettings = [
-      {
-        category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
-      }
-    ];
-
-    try {
-      const result = await model.generateContent({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig,
-        safetySettings
-      });
-
-      const response = await result.response;
-      const text = response.text();
-
-      if (!text || text.trim() === '') {
-        return "The AI model couldn't generate a summary. This might be due to content filtering or an issue with the transcript.";
-      }
-
-      return text;
-    } catch (genError) {
-      console.error('Specific error generating content with Google Gemini:', genError);
-
-      // Handle specific error types from the Gemini API
-      if (genError instanceof Error) {
-        const errorMessage = genError.message.toLowerCase();
-
-        if (errorMessage.includes('blocked') || errorMessage.includes('safety') || errorMessage.includes('harmful')) {
-          return "The AI model couldn't generate a summary due to content filtering. Please try with different content.";
-        } else if (errorMessage.includes('quota') || errorMessage.includes('limit exceeded') || errorMessage.includes('429')) {
-          console.log('Gemini failed for Summary, attempting open fallback...', errorMessage);
-          try {
-            return await callGroqFallback(prompt, "You are an expert AI meeting assistant. Summarize the following transcript perfectly.");
-          } catch (fallbackError) {
-            console.error('Both AI providers failed for Summary:', fallbackError);
-            return summaryTemplate;
-          }
-        } else if (errorMessage.includes('invalid request')) {
-          throw new Error('Invalid request to Google Gemini API. The transcript might be too long.');
-        }
-
-        throw genError; // Re-throw to be caught by the outer catch block
-      }
-
-      throw genError; // Re-throw unknown errors
-    }
-  } catch (error) {
-    console.error('Error generating summary with Google Gemini:', error);
-
-    // Handle specific error types
-    if (error instanceof Error) {
-      const errorMessage = error.message.toLowerCase();
-
-      if (errorMessage.includes('api key') || errorMessage.includes('apikey') || errorMessage.includes('key not valid')) {
-        throw new Error('Missing or invalid Google Gemini API key. Please check your .env file.');
-      } else if (errorMessage.includes('429') || errorMessage.includes('too many requests') || errorMessage.includes('quota') || errorMessage.includes('limit exceeded')) {
-        return summaryTemplate;
-      } else if (errorMessage.includes('blocked') || errorMessage.includes('content filtered')) {
-        return "The AI model couldn't generate a summary due to content filtering. Please try with different content.";
-      } else if (errorMessage.includes('network') || errorMessage.includes('connection')) {
-        throw new Error('Network error when connecting to Google Gemini API. Please check your internet connection.');
-      }
-    }
-
-    // Fallback error message
-    return "Failed to generate summary. Please try again with a different recording.";
-  }
-}
-
-// ==================== PM AGENT FUNCTIONS ====================
-
-interface SafetySetting {
-  category: string;
-  threshold: string;
-}
-
-const pmSafetySettings: SafetySetting[] = [
-  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" }
-];
-
-const pmGenerationConfig = {
-  temperature: 0.7,
-  topK: 40,
-  topP: 0.9,
-  maxOutputTokens: 4096,
-};
-
-async function callGemini(prompt: string): Promise<string> {
-  const genAI = getGenAI();
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-  const maxRetries = 2; // Reduced retries to fail faster for fallback
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      const result = await model.generateContent({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: pmGenerationConfig,
-        safetySettings: pmSafetySettings as any, // Cast necessary as library types are sometimes incompatible with literal assertions
-      });
-      const response = await result.response;
-      return response.text();
-    } catch (err) {
-      const error = err as Error;
-      const errorMsg = error?.message?.toLowerCase() || '';
-      console.warn(`Gemini PM call attempt ${attempt + 1}/${maxRetries} failed:`, errorMsg);
-
-      // Immediately fail for quota/rate limit errors to trigger fallback
-      if (errorMsg.includes('quota') || errorMsg.includes('429') || errorMsg.includes('limit exceeded')) {
-        throw new Error('QUOTA_EXCEEDED');
-      }
-
-      if (attempt < maxRetries - 1) {
-        const delay = Math.pow(2, attempt + 1) * 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
-      } else {
-        throw err;
-      }
-    }
-  }
-  throw new Error('Gemini call failed after retries');
-}
-
-export async function transcribeWithGroqWhisper(audioBlob: Blob): Promise<string> {
-  const apiKey = import.meta.env.VITE_GROQ_API_KEY;
-  if (!apiKey) {
-    throw new Error('No Groq API key found for transcription fallback');
-  }
-
-  const formData = new FormData();
-  formData.append('file', audioBlob, 'recording.m4a');
-  formData.append('model', 'whisper-large-v3');
-  formData.append('response_format', 'text');
-
-  try {
-    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`Groq Whisper error: ${response.statusText} ${JSON.stringify(errorData)}`);
-    }
-
-    return await response.text();
-  } catch (error) {
-    console.error('Groq Whisper transcription failed:', error);
-    throw error;
-  }
-}
-
-async function callGroqFallback(prompt: string, systemPrompt: string = "You are a helpful AI assistant."): Promise<string> {
-  const apiKey = import.meta.env.VITE_GROQ_API_KEY;
-
-  if (!apiKey) {
-    throw new Error('No Groq API key found');
-  }
-
-  const url = `https://api.groq.com/openai/v1/chat/completions`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: prompt }
-      ],
-      model: "llama-3.1-8b-instant", // Fast, powerful, and free on Groq
-      temperature: 0.7
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`Groq API error: ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  if (data?.choices?.[0]?.message?.content) {
-    return data.choices[0].message.content;
-  }
-  throw new Error("Invalid response format from Groq API");
-}
-
 // ==================== TEMPLATE FALLBACKS ====================
 
-const summaryTemplate = `> ⚠️ **AI Quota Exceeded:** Google Gemini API rate limit reached. Displaying a structured Meeting Summary template for manual entry. Please try generating with AI again in 1-2 minutes.
+const summaryTemplate = `> ⚠️ **AI Service Interruption:** Both Primary (Gemini) and Fallback (Groq) AI services are currently at their rate limits. Displaying a structured template for manual entry. Please try again in 1-2 minutes.
 
 # Meeting Summary
 
@@ -287,7 +32,7 @@ const summaryTemplate = `> ⚠️ **AI Quota Exceeded:** Google Gemini API rate 
 - **[Topic 3]:** [Brief points covered]
 `;
 
-const prdTemplate = `> ⚠️ **AI Quota Exceeded:** Google Gemini API rate limit reached. Displaying a structured PRD template for manual entry. Please try generating with AI again in 1-2 minutes.
+const prdTemplate = `> ⚠️ **AI Service Interruption:** Both Primary (Gemini) and Fallback (Groq) AI services are currently at their rate limits. Displaying a structured template for manual entry. Please try again in 1-2 minutes.
 
 # Product Requirements Document (PRD)
 
@@ -325,7 +70,7 @@ const prdTemplate = `> ⚠️ **AI Quota Exceeded:** Google Gemini API rate limi
 - **Phase 3 (Testing & Launch):** [Date]
 `;
 
-const userStoriesTemplate = `> ⚠️ **AI Quota Exceeded:** Google Gemini API rate limit reached. Displaying a structured User Stories template for manual entry. Please try generating with AI again in 1-2 minutes.
+const userStoriesTemplate = `> ⚠️ **AI Service Interruption:** Both Primary (Gemini) and Fallback (Groq) AI services are currently at their rate limits. Displaying a structured template for manual entry. Please try again in 1-2 minutes.
 
 # User Stories Backlog
 
@@ -373,7 +118,7 @@ const userStoriesTemplate = `> ⚠️ **AI Quota Exceeded:** Google Gemini API r
 **Labels:** ux, edge-case
 `;
 
-const sprintPlanTemplate = `> ⚠️ **AI Quota Exceeded:** Google Gemini API rate limit reached. Displaying a structured Sprint Plan template for manual entry. Please try generating with AI again in 1-2 minutes.
+const sprintPlanTemplate = `> ⚠️ **AI Service Interruption:** Both Primary (Gemini) and Fallback (Groq) AI services are currently at their rate limits. Displaying a structured template for manual entry. Please try again in 1-2 minutes.
 
 # Sprint Plan: [Sprint Goal]
 
@@ -403,365 +148,362 @@ const sprintPlanTemplate = `> ⚠️ **AI Quota Exceeded:** Google Gemini API ra
 - Product Manager sign-off
 `;
 
-export async function generatePRD(productIdea: string): Promise<string> {
+// ==================== CORE FUNCTIONS ====================
+
+export async function summarizeMeeting(transcript: string) {
   try {
-    if (!productIdea || productIdea.trim() === '') {
-      return "Please provide a product or feature idea to generate a PRD.";
+    if (!transcript || transcript.trim() === '') {
+      return "No transcript was provided to summarize. Please ensure audio is recorded properly.";
     }
 
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
     const prompt = `
-You are an expert Product Manager. Generate a comprehensive Product Requirements Document (PRD) based on the following idea or meeting summary. 
+      You are an expert AI Executive Assistant. Analyze this meeting transcript and provide a highly professional, comprehensive, and structured summary in Markdown. 
+      
+      The summary should be detailed enough to be standalone but concise enough for a busy executive. 
+      Use professional Markdown formatting including bolding for emphasis. Use clean bullet points (-).
+      
+      Your response must follow this exact structure:
+      
+      # 📝 Professional Meeting Summary
+      [Provide a thorough executive summary (1-2 paragraphs) that captures the core essence, strategic context, and overall outcome of the discussion.]
+      
+      ## 🌟 Strategic Key Highlights
+      - **[Critical Takeaway]:** Provide detailed context and implications for each point.
+      - **[Significant Insight]:** Explain why this matters for the project or organization.
+      - (Include all other major discussion points with enough detail to be easily understandable)
+      
+      ## 🎯 Action Items & Accountability
+      - **[Owner Name]:** [Specific, actionable task] - [Status/Deadline if mentioned]
+      - [If no owners are mentioned, list the tasks clearly based on the discussion context]
+      
+      ## ✅ Decisions & Alignment
+      - **[Decision]:** Document each final decision or consensus reached.
+      
+      ## 📅 Strategic Next Steps
+      - [A clear roadmap of what happens next, including follow-up meetings or milestones]
+      
+      Transcript:
+      ${transcript}
+    `;
 
-**STRICT RULE: Avoid literal double asterisks (**) or excessive bolding. Use clear, structured Markdown headers and clean bullet points.**
+    const generationConfig = {
+      temperature: 0.4,
+      topK: 32,
+      topP: 0.8,
+      maxOutputTokens: 2048,
+    };
 
-**Core Idea/Context:** ${productIdea}
+    const safetySettings = [
+      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE }
+    ];
 
-Structure the PRD with the following sections:
+    try {
+      const result = await model.generateContent({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig,
+        safetySettings
+      });
+
+      const response = await result.response;
+      const text = response.text();
+
+      if (!text || text.trim() === '') {
+        return "The AI model couldn't generate a summary. This might be due to content filtering or an issue with the transcript.";
+      }
+
+      return text;
+    } catch (genError) {
+      console.error('Specific error generating content with Google Gemini:', genError);
+      if (genError instanceof Error) {
+        const errorMessage = genError.message.toLowerCase();
+        if (errorMessage.includes('blocked') || errorMessage.includes('safety')) {
+          return "The AI model couldn't generate a summary due to content filtering.";
+        } else {
+          try {
+            return await callGroqFallback(prompt, "You are an expert AI meeting assistant. Summarize the following transcript professionally.");
+          } catch (fallbackError) {
+            return summaryTemplate;
+          }
+        }
+      }
+      return summaryTemplate;
+    }
+  } catch (error) {
+    console.error('Error generating summary:', error);
+    return summaryTemplate;
+  }
+}
+
+// ==================== PM AGENT FUNCTIONS ====================
+
+const pmSafetySettings = [
+  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" }
+];
+
+const pmGenerationConfig = {
+  temperature: 0.7,
+  topK: 40,
+  topP: 0.9,
+  maxOutputTokens: 4096,
+};
+
+async function callGemini(prompt: string): Promise<string> {
+  const genAI = getGenAI();
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+  const maxRetries = 2;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const result = await model.generateContent({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: pmGenerationConfig,
+        safetySettings: pmSafetySettings as any,
+      });
+      const response = await result.response;
+      return response.text();
+    } catch (err) {
+      const error = err as Error;
+      const errorMsg = error?.message?.toLowerCase() || '';
+      if (errorMsg.includes('quota') || errorMsg.includes('429')) {
+        throw new Error('QUOTA_EXCEEDED');
+      }
+      if (attempt < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt + 1) * 1000));
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error('Gemini call failed');
+}
+
+async function callGroqFallback(prompt: string, systemPrompt: string = "You are a helpful AI assistant."): Promise<string> {
+  const apiKey = import.meta.env.VITE_GROQ_API_KEY;
+  if (!apiKey) throw new Error('No Groq API key found');
+
+  const models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"];
+  const url = `https://api.groq.com/openai/v1/chat/completions`;
+
+  const maxSafeChars = 15000; 
+  const safePrompt = prompt.length > maxSafeChars ? prompt.substring(0, maxSafeChars) + "\n...[Truncated]..." : prompt;
+
+  for (const model of models) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          messages: [{ role: "system", content: systemPrompt }, { role: "user", content: safePrompt }],
+          model: model,
+          temperature: 0.7,
+          max_tokens: 2048
+        })
+      });
+
+      if (!response.ok) continue;
+
+      const data = await response.json();
+      if (data?.choices?.[0]?.message?.content) return data.choices[0].message.content;
+    } catch (err) { continue; }
+  }
+  throw new Error("All Groq fallbacks failed");
+}
+
+export async function generatePRD(productIdea: string): Promise<string> {
+  try {
+    if (!productIdea || productIdea.trim() === '') return "Please provide an idea to generate a PRD.";
+
+    const prompt = `
+You are an expert Product Manager. Generate a comprehensive, professional Product Requirements Document (PRD) based on the following idea/context:
+${productIdea}
+
+**STRICT RULE: Use professional Markdown formatting including bolding for emphasis. Use clean bullet points (-).**
+
+Structure the PRD with these sections:
 ## 1. Executive Summary
-Brief overview of the product/feature and its value proposition.
-
 ## 2. Problem Statement
-What specific problem are we solving?
-
 ## 3. Goals & Success Metrics
-What does success look like? Include specific, measurable KPIs.
-
 ## 4. Target Audience
-Who are the primary and secondary users?
-
 ## 5. Key Features & Requirements
-Detailed breakdown of features. Prioritize them (e.g., P0, P1, P2) or split into MVP vs. V2. Include acceptance criteria where relevant.
-
 ## 6. User Experience & Design
-User flows, key screens, and overall UX principles.
-
 ## 7. Technical Considerations
-High-level technical requirements, constraints, or dependencies.
-
 ## 8. Timeline & Milestones
-Suggested phases with estimated timelines.
-
 ## 9. Risks & Mitigations
-Potential risks and how to mitigate them.
-
 ## 10. Open Questions
-Questions that need to be answered before or during development.
 
-Be thorough, specific, and actionable. Write as if this PRD will be handed directly to an engineering team.
+Be thorough, specific, and professional.
     `;
 
     try {
       return await callGemini(prompt);
-    } catch (geminiError) {
-      const error = geminiError instanceof Error ? geminiError : new Error(String(geminiError));
-      console.log('Gemini failed for PRD, attempting open fallback...', error.message);
-      try {
-        return await callGroqFallback(prompt, "You are an expert Product Manager. Please complete the following request clearly and concisely in Markdown format.");
-      } catch (fallbackError) {
-        console.error('Both AI providers failed for PRD:', fallbackError);
-        return prdTemplate;
-      }
+    } catch (err) {
+      return await callGroqFallback(prompt, "You are an expert Product Manager. Generate a professional PRD.");
     }
   } catch (error) {
-    console.error('Error generating PRD:', error);
     return prdTemplate;
   }
 }
 
 export async function generateUserStories(featureDescription: string): Promise<string> {
   try {
-    if (!featureDescription || featureDescription.trim() === '') {
-      return "Please provide a feature description to generate user stories.";
-    }
+    if (!featureDescription || featureDescription.trim() === '') return "Please provide a description.";
 
     const prompt = `
-You are an expert Product Manager and Agile coach. Generate comprehensive user stories for the following feature. 
+You are an expert Agile coach. Generate a comprehensive set of professional user stories for:
+${featureDescription}
 
-**STRICT RULE: Avoid literal double asterisks (**) or excessive bolding. Use clean bullet points and clear Markdown structure (### headers).**
+**STRICT RULE: Use professional Markdown formatting including bolding for emphasis. Use clean bullet points (-).**
 
-**Feature Description:** ${featureDescription}
-
-For each user story, use this format:
-
-### Story [number]: [Title]
-**As a** [user role],
-**I want** [capability/action],
-**So that** [benefit/value].
-
+Format each story:
+### Story [n]: [Title]
+**As a** [user], **I want** [action], **So that** [value].
 **Acceptance Criteria:**
-- [ ] [Specific, testable criterion 1]
-- [ ] [Specific, testable criterion 2]
-- [ ] [Specific, testable criterion 3]
-
+- [ ] [Criterion]
 **Priority:** [P0/P1/P2]
-**Story Points:** [1/2/3/5/8/13]
-**Labels:** [relevant labels like "frontend", "backend", "UX", etc.]
+**Story Points:** [1-13]
 
----
-
-Generate at least 5-8 user stories covering:
-- Core happy path flows
-- Edge cases and error handling
-- Admin/power user scenarios
-- Accessibility considerations
-
-Order stories by priority (P0 first). Be specific and testable in acceptance criteria. Each criterion should be independently verifiable.
+Generate 8-10 stories covering core flows, edge cases, and security.
     `;
 
     try {
       return await callGemini(prompt);
-    } catch (geminiError) {
-      const error = geminiError instanceof Error ? geminiError : new Error(String(geminiError));
-      console.log('Gemini failed for User Stories, attempting open fallback...', error.message);
-      try {
-        return await callGroqFallback(prompt, "You are an expert Product Manager and Agile coach. Please complete the following request clearly and concisely in Markdown format.");
-      } catch (fallbackError) {
-        console.error('Both AI providers failed for User Stories:', fallbackError);
-        return userStoriesTemplate;
-      }
+    } catch (err) {
+      return await callGroqFallback(prompt, "You are an expert Product Manager. Generate professional User Stories.");
     }
   } catch (error) {
-    console.error('Error generating user stories:', error);
     return userStoriesTemplate;
   }
 }
 
 export async function generateSprintPlan(backlogItems: string, duration: string = '2 weeks'): Promise<string> {
   try {
-    if (!backlogItems || backlogItems.trim() === '') {
-      return "Please provide backlog items to generate a sprint plan.";
-    }
+    if (!backlogItems || backlogItems.trim() === '') return "Please provide backlog items.";
 
     const prompt = `
-You are an expert Agile Scrum Master and Product Manager. Create a structured sprint plan from the following backlog of items/ideas. 
+Generate a professional sprint plan for ${duration} based on:
+${backlogItems}
 
-**STRICT RULE: Avoid literal double asterisks (**) or excessive bolding. Use clear Markdown structure and the table format provided below. Use simple text in table cells.**
-
-**Backlog Items/Context:** ${backlogItems}
-
-Please structure the sprint plan as follows:
-
+Structure:
 ## Sprint Goal
-[A clear, concise 1-2 sentence goal for the sprint]
-
 ## Sprint Capacity & Assumptions
-- Sprint Duration: ${duration}
-- [Any other assumptions you make about team size/composition]
-
-## Sprint Backlog
-Present the selected items in a markdown table with the following columns:
-| ID | Title | Priority | Status | Assignee Role | Story Points |
-
-*Include 5-10 logical items broken down from the context provided.*
-
+## Sprint Backlog (Markdown Table: ID, Title, Priority, Status, Assignee Role, Story Points)
 ## Key Dependencies & Risks
-Identify 2-3 potential risks or dependencies that could impact this sprint and propose mitigations.
-
 ## Daily Standup Focus
-What should be the key areas of focus for the team during this sprint?
 
-Be realistic with story point estimates. Total points should be achievable within the sprint duration for the team size.
+Be realistic and professional.
     `;
 
     try {
       return await callGemini(prompt);
-    } catch (geminiError) {
-      const error = geminiError instanceof Error ? geminiError : new Error(String(geminiError));
-      console.log('Gemini failed for Sprint Plan, attempting open fallback...', error.message);
-      try {
-        return await callGroqFallback(prompt, "You are an expert Agile Scrum Master and Product Manager. Please complete the following request clearly and concisely in Markdown format.");
-      } catch (fallbackError) {
-        console.error('Both AI providers failed for Sprint Plan:', fallbackError);
-        return sprintPlanTemplate;
-      }
+    } catch (err) {
+      return await callGroqFallback(prompt, "You are an expert Scrum Master. Generate a professional Sprint Plan.");
     }
   } catch (error) {
-    console.error('Error generating sprint plan:', error);
     return sprintPlanTemplate;
   }
 }
 
 export async function analyzeFeaturePriority(featuresString: string): Promise<string> {
   try {
-    if (!featuresString || featuresString.trim() === '') {
-      throw new Error('Please provide features to analyze.');
-    }
+    if (!featuresString || featuresString.trim() === '') throw new Error('No features provided');
 
     const prompt = `
-You are an expert Product Manager. Analyze and prioritize the following list of features. Use clear markdown formatting.
-
-**Features to prioritize:**
+Prioritize these features using the RICE model:
 ${featuresString}
 
-Please use the RICE scoring model framework (Reach, Impact, Confidence, Effort) to evaluate these features.
-
-Output Requirements:
-1. Provide a brief explanation of your prioritization strategy.
-2. Present the prioritized list in a markdown table sorted from highest RICE score to lowest.
-   Columns: | Feature | Reach (1-10) | Impact (1-5) | Confidence (%) | Effort (months) | RICE Score |
-3. Add a short paragraph for the top 2 features explaining WHY they are the most critical.
-
-Be data-driven and justify each score. Consider user impact, business value, and technical complexity.
+Output:
+1. Prioritization strategy explanation.
+2. Markdown table sorted by RICE score.
+3. Rationale for top 2 features.
     `;
 
     try {
       return await callGemini(prompt);
-    } catch (geminiError) {
-      const error = geminiError instanceof Error ? geminiError : new Error(String(geminiError));
-      console.log('Gemini failed for Feature Priority, attempting open fallback...', error.message);
-      try {
-        return await callGroqFallback(prompt, "You are an expert Product Manager. Please complete the following request clearly and concisely in Markdown format.");
-      } catch (fallbackError) {
-        console.error('Both AI providers failed for Feature Priority:', fallbackError);
-        return "> ⚠️ **AI Quota Exceeded:** Unable to prioritize features via AI at this moment. Please wait 1-2 minutes for the quota to reset.";
-      }
+    } catch (err) {
+      return await callGroqFallback(prompt, "You are an expert PM. Prioritize features using RICE.");
     }
   } catch (error) {
-    console.error('Error analyzing feature priority:', error);
-    throw new Error(error instanceof Error ? error.message : 'Failed to analyze feature priority. Please try again.');
+    return "> ⚠️ AI Service Busy. Please try again later.";
   }
 }
-interface HistoryItem {
-  date?: string;
-  summary?: string;
-  content?: string;
-}
+
+interface HistoryItem { date?: string; summary?: string; content?: string; }
 
 export async function queryKnowledge(query: string, history: HistoryItem[]): Promise<string> {
   try {
-    if (!query || query.trim() === '') {
-      return "Please provide a question to ask the AI Memory.";
-    }
+    if (!query || query.trim() === '') return "Please provide a question.";
+    if (!history || history.length === 0) return "No history found.";
 
-    if (!history || history.length === 0) {
-      return "No meeting history found to analyze. Please record or upload some meetings first!";
-    }
+    const knowledgeBase = history.map((m, i) => `--- MEETING #${i + 1} (${m.date}) ---\n${m.summary || m.content}`).join('\n');
 
-    // Format the knowledge base from history safely
-    let knowledgeBase = "";
-    for (let i = 0; i < history.length; i++) {
-      const m = history[i];
-      knowledgeBase += `\n--- MEETING #${i + 1} (${m.date || 'Unknown Date'}) ---\n${m.summary || m.content || 'No summary available'}\n`;
-    }
-
-    const knowledgePrompt = `
-You are the "3.0 Agent" - a supreme Global Intelligence powered by 3.0 Labs. 
-You are not just a chatbot; you are a world-class Product Strategist, Principal Software Architect, and Lead UI/UX Designer.
-
-### YOUR CAPABILITIES:
-1. **Perfect Context Memory**: You have access to the user's entire meeting history provided below.
-2. **Deep Architectural Insight**: You can design complex system architectures, database schemas, and API structures.
-3. **Premium Design Thinking**: You provide high-fidelity UI/UX suggestions, design tokens (HSL colors, spacing), and layout strategies that "WOW" the user.
-4. **Strategic Critique**: You don't just agree; you analyze ideas for viability, suggest market positioning, and perform SWOT/RICE analyses where relevant.
-
-
-**THE USER'S QUESTION:**
-"${query}"
-
-**YOUR KNOWLEDGE BASE (Meeting History):**
+    const prompt = `
+You are the "3.0 Agent" - a supreme Intelligence. You have access to this meeting history:
 ${knowledgeBase}
 
-### OPERATIONAL INSTRUCTIONS:
-1. **Context First**: If the query relates to past meetings, use the Knowledge Base as your source of truth.
-2. **Design Depth**: 
-   - If a UI/UX design is requested or relevant, provide specific visual descriptions.
-   - Use CSS/Tailwind/React snippets for key components.
-   - Suggest a premium color palette (e.g., "Deep Obsidian #0B0C10 with Electric Crimson #EF4444 accents").
-3. **Architectural Complexity**:
-   - For new ideas, suggest a technical stack (Node.js, Next.js, Supabase, Redis).
-   - Provide a database schema or API endpoint map if appropriate.
-4. **Visual UI Designs (PHOTOS)**:
-   - When asked for a UI/UX design, you MUST provide a visual mockup as a "PHOTO" (image).
-   - **CRITICAL**: Use the exact markdown syntax BELOW. DO NOT wrap it in code blocks. DO NOT use backticks. DO NOT indent it.
-   - Syntax: ![Mockup](https://image.pollinations.ai/prompt/Descriptive+Prompt+With+Plus+Signs?width=1024&height=1024&nologo=true)
-   - **IMPORTANT**: Replace spaces in the prompt with + characters.
-   - Example: ![Fintech Dashboard](https://image.pollinations.ai/prompt/Premium+Fintech+Dashboard+Dark+Mode+Red+Accents+Glassmorphism?width=1024&height=1024&nologo=true)
-   - Always follow the image with a description.
-5. **Visual Logic (Mermaid.js)**:
-   - Use flowcharts for processes or sequences.
-   - **MUST USE QUOTED LABELS**.
-   - Always use graph TD for vertical flow.
-   - Example:
-\`\`\`mermaid
-graph TD
-    A["Frontend"] --> B["API Gateway"]
-    B --> C["Microservices"]
-\`\`\`
-5. **Depth of Response**: 
-   - Use headers, tables, and bold text for readability.
-   - Be thorough. If an idea is proposed, give a SWOT analysis (Strengths, Weaknesses, Opportunities, Threats) automatically.
-6. **Tone**: Premium, expert, helpful, and visionary. You are a partner in building 3.0 Labs.
+User Question: "${query}"
 
-### FORMATTING RULES:
-- Use clean Markdown.
-- Mermaid blocks must be followed by a brief explanation.
-- Code blocks must specify the language.
-
-Write your supreme response now:
+Instructions:
+1. Use history as truth.
+2. Provide high-fidelity design/architectural suggestions.
+3. Use Mermaid for logic diagrams.
+4. Use images from pollination for UI mockups: ![Mockup](https://image.pollinations.ai/prompt/Descriptive+Prompt+With+Plus+Signs?width=1024&height=1024&nologo=true)
+5. Tone: Premium and visionary.
     `;
 
     try {
-      return await callGemini(knowledgePrompt);
-    } catch (geminiError) {
-      const error = geminiError instanceof Error ? geminiError : new Error(String(geminiError));
-      console.log('Gemini failed for Knowledge Chat, attempting open fallback...', error.message);
-      if (error.message === 'QUOTA_EXCEEDED' || error.message.includes('429')) {
-        try {
-          return await callGroqFallback(knowledgePrompt, "You are 3.0 Labs Intelligence, a specialized PM AI Agent with perfect memory. IMPORTANT: If using Mermaid syntax, always quote node names with spaces. Answer all types of questions expertly.");
-        } catch (fallbackError) {
-          console.error('Both AI providers failed for Knowledge Chat:', fallbackError);
-          return "I'm sorry, I'm currently having trouble accessing my memory banks (API limit reached). Please try again in 1-2 minutes.";
-        }
-      }
-      throw geminiError;
+      return await callGemini(prompt);
+    } catch (err) {
+      return await callGroqFallback(prompt, "You are 3.0 Labs Intelligence.");
     }
   } catch (error) {
-    console.error('Error querying knowledge:', error);
-    return "An error occurred while trying to access the AI memory. Please ensure your API keys are valid.";
+    return "Error accessing AI memory.";
   }
 }
 
-interface BriefingEvent {
-  summary: string;
-  date: string;
-}
+interface BriefingEvent { summary: string; date: string; }
 
 export async function generateMorningBriefing(events: BriefingEvent[], history: HistoryItem[]): Promise<string> {
-  const genAI = getGenAI();
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
   const eventsString = events.map(e => `- ${e.summary} at ${new Date(e.date).toLocaleTimeString()}`).join('\n');
   const historyString = history.slice(0, 5).map(m => `- ${m.summary}`).join('\n');
 
   const prompt = `
-    You are a high-level Personal Executive Assistant for a Product Manager.
-    Your goal is to provide a brief, professional, and motivating morning briefing for today.
-    
-    Today's Schedule:
-    ${eventsString || "No meetings scheduled for today."}
-    
-    Relevant Past Context (Last 5 meeting summaries):
-    ${historyString || "No previous meeting history found."}
-    
-    Instructions:
-    1. Summarize what is on the agenda for today.
-    2. Try to connect today's meetings with past context (e.g., "You have a follow-up on the X project we discussed yesterday").
-    3. Keep it to about 100-150 words.
-    4. Provide 2-3 specific points of advice or reminders for the day.
-    5. Write in a tone that is premium, intelligent, and slightly visionary.
+Provide a premium morning briefing.
+Agenda: ${eventsString || "None"}
+History: ${historyString || "None"}
+
+Instructions: Summarize today, connect with past context, and provide 2-3 pieces of advice.
   `;
 
   try {
-    const result = await model.generateContent(prompt);
-    return result.response.text();
+    return await callGemini(prompt);
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    console.warn('Gemini Morning Briefing failed, attempting Groq fallback...', error.message);
-    try {
-      return await callGroqFallback(prompt, "You are a professional Executive Assistant PM Agent. Provide a concise, visionary morning briefing.");
-    } catch (fallbackError) {
-      console.error('Both AI providers failed for Morning Briefing:', fallbackError);
-      return "Good morning. I encountered an error preparing your full briefing, but you have " + (events.length || "no") + " meetings scheduled for today. Let's make it a productive day.";
-    }
+    return await callGroqFallback(prompt, "You are a professional Executive Assistant.");
   }
+}
+
+export async function transcribeWithGroqWhisper(audioBlob: Blob): Promise<string> {
+  const apiKey = import.meta.env.VITE_GROQ_API_KEY;
+  if (!apiKey) throw new Error('No Groq API key found');
+
+  const formData = new FormData();
+  formData.append('file', audioBlob, 'recording.m4a');
+  formData.append('model', 'whisper-large-v3');
+  formData.append('response_format', 'text');
+
+  const response = await fetch('https://api.groq.com/openai/v1/audio/translations', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}` },
+    body: formData,
+  });
+
+  if (!response.ok) throw new Error('Whisper failed');
+  return await response.text();
 }
