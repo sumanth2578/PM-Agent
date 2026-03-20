@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Mic, MicOff, Monitor, Upload, CheckCircle, Settings, Menu, Clock, Video, Phone, Link2, ExternalLink, Sparkles, FileText, Users, Calendar as CalendarIcon, History } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
-import { GoogleGenerativeAI } from '@google-generative-ai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { useRecording } from '../context/RecordingContext';
 import { generatePRD, generateUserStories, generateSprintPlan, transcribeWithGroqWhisper, summarizeMeeting } from '../lib/gemini';
 import { useGoogleLogin } from '@react-oauth/google';
